@@ -1,7 +1,6 @@
 #include "oled_ui.h"
 #include "app_pins.h"
 #include <U8g2lib.h>
-#include <WiFi.h>
 #include <Wire.h>
 
 // 1.3" 128x64 SH1106 I2C
@@ -13,12 +12,6 @@ static U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(
 
 static bool oledAvailable = false;
 static uint8_t oledAddress = 0;
-
-static uint8_t activeScreen = 0;
-static uint32_t lastScreenSwitchMs = 0;
-static String lastUiState = "";
-
-static const uint32_t kScreenRotateMs = 4000;
 static const float kPhaseOnThresholdA = 0.90f;
 
 static bool probe_oled_addr(uint8_t addr)
@@ -42,6 +35,22 @@ static const char* ui_state_label(const String& stateStable)
   return "DURUM";
 }
 
+static const char* ui_idle_title(const String& stateStable)
+{
+  if (stateStable == "A") return "BEKLE";
+  if (stateStable == "B") return "HAZIR";
+  if (stateStable == "E" || stateStable == "F") return "HATA";
+  return "EVSE";
+}
+
+static const char* ui_idle_subtitle(const String& stateStable)
+{
+  if (stateStable == "A") return "Kablo bekleniyor";
+  if (stateStable == "B") return "Arac bagli";
+  if (stateStable == "E" || stateStable == "F") return "Sarj durduruldu";
+  return "Durum izleniyor";
+}
+
 static const char* phase_label(float ia, float ib, float ic)
 {
   if (ib > kPhaseOnThresholdA || ic > kPhaseOnThresholdA) return "3F";
@@ -49,15 +58,34 @@ static const char* phase_label(float ia, float ib, float ic)
   return "--";
 }
 
-static void format_duration(uint32_t chargeSeconds, char* out, size_t outSize)
+static float display_current(float ia, float ib, float ic)
+{
+  float sum = 0.0f;
+  uint8_t count = 0;
+
+  if (ia > kPhaseOnThresholdA) {
+    sum += ia;
+    count++;
+  }
+  if (ib > kPhaseOnThresholdA) {
+    sum += ib;
+    count++;
+  }
+  if (ic > kPhaseOnThresholdA) {
+    sum += ic;
+    count++;
+  }
+
+  if (count == 0) return 0.0f;
+  return sum / (float)count;
+}
+
+static void format_duration_hhmm(uint32_t chargeSeconds, char* out, size_t outSize)
 {
   uint32_t hh = chargeSeconds / 3600;
   uint32_t mm = (chargeSeconds % 3600) / 60;
-  uint32_t ss = chargeSeconds % 60;
-  snprintf(out, outSize, "%02lu:%02lu:%02lu",
-           (unsigned long)hh,
-           (unsigned long)mm,
-           (unsigned long)ss);
+  if (hh > 99) hh = 99;
+  snprintf(out, outSize, "%02lu:%02lu", (unsigned long)hh, (unsigned long)mm);
 }
 
 static void draw_centered_text(int y, const char* text)
@@ -67,27 +95,10 @@ static void draw_centered_text(int y, const char* text)
   u8g2.drawStr(x, y, text);
 }
 
-static void draw_header(const char* title, const String& stateStable, bool alert)
+static void draw_status_badge(int x, const char* text, bool active)
 {
-  u8g2.setFont(u8g2_font_6x10_tf);
-  if (alert) {
-    u8g2.drawBox(0, 0, 128, 12);
-    u8g2.setDrawColor(0);
-  } else {
-    u8g2.drawRFrame(0, 0, 128, 12, 2);
-  }
-
-  draw_centered_text(9, title);
-
-  int codeX = 124 - u8g2.getStrWidth(stateStable.c_str());
-  if (codeX < 2) codeX = 2;
-  u8g2.drawStr(codeX, 9, stateStable.c_str());
-
-  if (alert) u8g2.setDrawColor(1);
-}
-
-static void draw_badge(int x, int y, int w, const char* text, bool active)
-{
+  const int y = 1;
+  const int w = 10;
   const int h = 10;
   u8g2.setFont(u8g2_font_5x7_tf);
 
@@ -98,120 +109,74 @@ static void draw_badge(int x, int y, int w, const char* text, bool active)
     u8g2.drawRFrame(x, y, w, h, 2);
   }
 
-  int textX = x + (w - u8g2.getStrWidth(text)) / 2;
-  if (textX < x + 1) textX = x + 1;
-  u8g2.drawStr(textX, y + 8, text);
+  int tx = x + (w - u8g2.getStrWidth(text)) / 2;
+  if (tx < x + 1) tx = x + 1;
+  u8g2.drawStr(tx, 9, text);
   u8g2.setDrawColor(1);
 }
 
-static void draw_charging_indicator(bool charging)
+static void draw_header(const String& stateStable,
+                        bool staConnected,
+                        bool cableConnected,
+                        bool relayOn)
 {
-  if (!charging) {
-    u8g2.drawCircle(118, 26, 4, U8G2_DRAW_ALL);
-    return;
-  }
-
-  if (((millis() / 350) % 2U) == 0U) {
-    u8g2.drawDisc(118, 26, 4, U8G2_DRAW_ALL);
-  } else {
-    u8g2.drawCircle(118, 26, 4, U8G2_DRAW_ALL);
-  }
-}
-
-static void draw_overview_screen(const String& stateStable,
-                                 float powerW,
-                                 float energyKwh,
-                                 uint32_t chargeSeconds,
-                                 bool relayOn,
-                                 bool staConnected,
-                                 bool cableConnected)
-{
-  char powerText[10];
-  char statsLine[28];
-  char timeText[12];
-  bool charging = (stateStable == "C" || stateStable == "D");
-
-  draw_header(ui_state_label(stateStable), stateStable, false);
-
-  u8g2.drawRFrame(0, 15, 128, 27, 3);
-  u8g2.setFont(u8g2_font_5x7_tf);
-  u8g2.drawStr(5, 22, "ANLIK GUC");
-  u8g2.drawStr(107, 22, "kW");
-
-  snprintf(powerText, sizeof(powerText), "%.1f", powerW / 1000.0f);
-  u8g2.setFont(u8g2_font_logisoso18_tn);
-  draw_centered_text(38, powerText);
-  draw_charging_indicator(charging);
-
-  format_duration(chargeSeconds, timeText, sizeof(timeText));
-  u8g2.setFont(u8g2_font_5x7_tf);
-  snprintf(statsLine, sizeof(statsLine), "E:%.2fkWh  T:%s", energyKwh, timeText);
-  draw_centered_text(49, statsLine);
-
-  draw_badge(0, 54, 40, "WiFi", staConnected);
-  draw_badge(44, 54, 40, "Kablo", cableConnected);
-  draw_badge(88, 54, 40, "Role", relayOn);
-}
-
-static void draw_technical_screen(const String& stateStable,
-                                  float ia,
-                                  float ib,
-                                  float ic,
-                                  float powerW,
-                                  float energyKwh,
-                                  uint32_t chargeSeconds,
-                                  bool relayOn,
-                                  bool staConnected)
-{
-  char line[32];
-  char timeText[12];
-
-  draw_header("DETAYLAR", stateStable, false);
-
   u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.drawStr(2, 9, ui_state_label(stateStable));
+  draw_status_badge(94, "W", staConnected);
+  draw_status_badge(106, "K", cableConnected);
+  draw_status_badge(118, "R", relayOn);
+  u8g2.drawHLine(0, 12, 128);
+}
 
-  snprintf(line, sizeof(line), "I1:%4.1fA I2:%4.1fA", ia, ib);
-  u8g2.drawStr(2, 22, line);
+static void draw_main_panel(const String& stateStable, float ia, float ib, float ic)
+{
+  const bool charging = (stateStable == "C" || stateStable == "D");
+  u8g2.drawRFrame(0, 16, 128, 27, 3);
 
-  snprintf(line, sizeof(line), "I3:%4.1fA Faz:%s", ic, phase_label(ia, ib, ic));
-  u8g2.drawStr(2, 34, line);
+  if (charging) {
+    char currentText[12];
+    float currentA = display_current(ia, ib, ic);
+    snprintf(currentText, sizeof(currentText), "%.1f", currentA);
 
-  snprintf(line, sizeof(line), "P:%4.1fkW E:%5.2f", powerW / 1000.0f, energyKwh);
-  u8g2.drawStr(2, 46, line);
+    u8g2.setFont(u8g2_font_6x10_tf);
+    draw_centered_text(26, (stateStable == "D") ? "HAVALANDIRMA" : "SARJ DEVAM");
 
-  format_duration(chargeSeconds, timeText, sizeof(timeText));
-  snprintf(line, sizeof(line), "T:%s R:%s", timeText, relayOn ? "ON" : "OFF");
-  u8g2.drawStr(2, 58, line);
+    u8g2.setFont(u8g2_font_logisoso18_tn);
+    int valueWidth = u8g2.getStrWidth(currentText);
+    int valueX = (128 - valueWidth - 12) / 2;
+    if (valueX < 4) valueX = 4;
+    u8g2.drawStr(valueX, 41, currentText);
 
-  u8g2.setFont(u8g2_font_5x7_tf);
-  if (staConnected && WiFi.localIP()[0] != 0) {
-    String ipLine = "IP:" + WiFi.localIP().toString();
-    u8g2.drawStr(2, 64, ipLine.c_str());
+    u8g2.setFont(u8g2_font_7x13B_tf);
+    u8g2.drawStr(valueX + valueWidth + 3, 39, "A");
   } else {
-    u8g2.drawStr(2, 64, "WiFi: baglaniyor");
+    u8g2.setFont(u8g2_font_7x13B_tf);
+    draw_centered_text(31, ui_idle_title(stateStable));
+
+    u8g2.setFont(u8g2_font_6x10_tf);
+    draw_centered_text(41, ui_idle_subtitle(stateStable));
   }
 }
 
-static void draw_error_screen(const String& stateStable,
-                              bool staConnected,
-                              bool cableConnected)
+static void draw_metrics(float ia,
+                         float ib,
+                         float ic,
+                         float powerW,
+                         float energyKwh,
+                         uint32_t chargeSeconds)
 {
-  draw_header("HATA", stateStable, true);
+  char line1[28];
+  char line2[28];
+  char timeText[8];
 
-  u8g2.drawTriangle(10, 18, 26, 18, 18, 34);
-  u8g2.drawLine(18, 21, 18, 28);
-  u8g2.drawDisc(18, 31, 1, U8G2_DRAW_ALL);
+  format_duration_hhmm(chargeSeconds, timeText, sizeof(timeText));
 
-  u8g2.setFont(u8g2_font_7x13B_tf);
-  u8g2.drawStr(34, 28, "Sarj durdu");
+  u8g2.setFont(u8g2_font_5x7_tf);
+  snprintf(line1, sizeof(line1), "Guc:%.1fkW Faz:%s", powerW / 1000.0f, phase_label(ia, ib, ic));
+  snprintf(line2, sizeof(line2), "E:%.2fkWh T:%s", energyKwh, timeText);
 
-  u8g2.setFont(u8g2_font_6x10_tf);
-  u8g2.drawStr(34, 42, "Pilot/CP kontrol edin");
-  u8g2.drawStr(34, 50, "Guvenlikte bekliyor");
-
-  draw_badge(0, 54, 40, "WiFi", staConnected);
-  draw_badge(44, 54, 40, "Kablo", cableConnected);
-  draw_badge(88, 54, 40, "Hata", true);
+  u8g2.drawStr(2, 52, line1);
+  u8g2.drawStr(2, 62, line2);
 }
 
 void oled_init()
@@ -235,10 +200,6 @@ void oled_init()
   u8g2.begin();
   Serial.printf("OLED hazir: SH1106 @ 0x%02X\n", oledAddress);
 
-  activeScreen = 0;
-  lastScreenSwitchMs = millis();
-  lastUiState = "";
-
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tf);
   u8g2.drawStr(10, 30, "Rotosis EVSE");
@@ -259,43 +220,10 @@ void oled_draw(const String& stateStable,
 {
   if (!oledAvailable) return;
 
-  uint32_t nowMs = millis();
-  bool errorState = is_error_state(stateStable);
-
-  if (stateStable != lastUiState) {
-    activeScreen = 0;
-    lastUiState = stateStable;
-    lastScreenSwitchMs = nowMs;
-  }
-
-  if (!errorState && (nowMs - lastScreenSwitchMs >= kScreenRotateMs)) {
-    activeScreen = (activeScreen + 1U) % 2U;
-    lastScreenSwitchMs = nowMs;
-  }
-
   u8g2.clearBuffer();
-
-  if (errorState) {
-    draw_error_screen(stateStable, staConnected, cableConnected);
-  } else if (activeScreen == 0) {
-    draw_overview_screen(stateStable,
-                         powerW,
-                         energyKwh,
-                         chargeSeconds,
-                         relayOn,
-                         staConnected,
-                         cableConnected);
-  } else {
-    draw_technical_screen(stateStable,
-                          ia,
-                          ib,
-                          ic,
-                          powerW,
-                          energyKwh,
-                          chargeSeconds,
-                          relayOn,
-                          staConnected);
-  }
+  draw_header(stateStable, staConnected, cableConnected, relayOn);
+  draw_main_panel(stateStable, ia, ib, ic);
+  draw_metrics(ia, ib, ic, powerW, energyKwh, chargeSeconds);
 
   u8g2.sendBuffer();
 }
