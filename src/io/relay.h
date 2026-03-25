@@ -1,6 +1,9 @@
 #pragma once
 #include <Arduino.h>
 
+// Role modulu hem klasik role cikisini hem de latch set/reset cikislarini yonetir.
+// Donanim degisikliginde app_pins.h ve relay.cpp birlikte kontrol edilmelidir.
+
 void relay_init();
 void relay_set(bool on);
 bool relay_get();

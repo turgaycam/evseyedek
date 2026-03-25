@@ -1,6 +1,9 @@
 #pragma once
 #include <Arduino.h>
 
+// Pilot modulu CP hattini olcer ve A/B/C/D/E state bilgisini uretir.
+// State davranisini degistirmek istiyorsan asil mudahale noktasi pilot.cpp'dir.
+
 struct PilotMeasurements {
   float adcHigh;
   float adcLow;

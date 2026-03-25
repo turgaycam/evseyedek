@@ -3,6 +3,9 @@
 #include "EmonLib.h"
 #include <Arduino.h>
 
+// Akim sensor modulu.
+// Yeni CT karti veya farkli kalibrasyon gelirse ilk mudahale edilecek yer burasidir.
+
 static EnergyMonitor emonA;
 static EnergyMonitor emonB;
 static EnergyMonitor emonC;
@@ -16,6 +19,7 @@ static bool phase_active_a = false;
 static bool phase_active_b = false;
 static bool phase_active_c = false;
 
+// Raw Irms degerini gurultu tabani, hysteresis ve EMA ile daha okunabilir hale getirir.
 static float apply_phase_filter(float raw, float* noise_floor, bool* phase_active, float last_value) {
     // Dusuk seviyede yavas noise-floor kalibrasyonu.
     if (raw < 2.0f) {
@@ -46,8 +50,8 @@ void current_sensor_init() {
     pinMode(CURRENT_SENSOR_PIN_B, INPUT);
     pinMode(CURRENT_SENSOR_PIN_C, INPUT);
 
-    // ZMCT118A: turns ratio 2000:1, burden 50 ohm -> cal = 40 (base)
-    // Faz bazlı kalibrasyon (pens ampermetreye göre)
+    // Her fazin kalibrasyon katsayisi burada ayarlanir.
+    // Pens ampermetre ile karsilastirip bu degerler duzeltilir.
     emonA.current(CURRENT_SENSOR_PIN_A, 15.01f); // fine-tune: 23.17 / 23.7
     emonB.current(CURRENT_SENSOR_PIN_B, 15.47f); // fine-tune: 25.17 / 25.6
     emonC.current(CURRENT_SENSOR_PIN_C, 27.69f); // fine-tune: 24.28 / 24.7
@@ -59,8 +63,7 @@ void current_sensor_init() {
 }
 
 void current_sensor_loop() {
-    // Non-blocking update: her turda tek faz olc.
-    // Eski yapi 3 fazi birden 2000 sample ile okudugu icin web cevaplari takilabiliyordu.
+    // Her turda tek faz okunur; web arayuzunu bloklamamak icin dagitilmis olcum kullanilir.
     static uint32_t last_read = 0;
     static uint8_t phase_index = 0;
     const uint32_t now = millis();

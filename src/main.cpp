@@ -9,6 +9,16 @@
 #include "ui/oled_ui.h"
 #include "io/current_sensor.h" // YENİ: Akım sensörü kütüphanesi eklendi
 
+// Bu dosya projenin merkez akisidir.
+// Neyi nereden degistirecegini hizli bulmak icin:
+// - pin degisimi: include/app_pins.h
+// - CP / state esikleri: bu dosyadaki global ayarlar
+// - pilot state mantigi: src/pilot/pilot.cpp
+// - role gecikmesi: src/io/relay.cpp
+// - OLED gorunumu: src/ui/oled_ui.cpp
+// - web panel ve API: src/net/web_ui.cpp
+
+// CP yorumlama ayarlari. Web panelinden de guncellenebilir.
 // web’den değişebilir
 float CP_DIVIDER_RATIO = 4.62f;
 float TH_A_MIN = 11.0f;
@@ -55,6 +65,7 @@ static uint32_t sessionStartMs = 0;
 static float sessionStartEnergyWh = 0.0f;
 static uint8_t sessionPhaseMax = 1;
 
+// Gecmis ekranini ve web API'sini sifirlamak icin kullanilir.
 void resetHistoryData()
 {
   for (int i = 0; i < 20; i++) {
@@ -97,6 +108,7 @@ void resetChargeData(bool clearHistory)
 static bool lastPwmEnabled = false;
 static int  lastDuty = -1;
 
+// PWM yalnizca gercekten degisince yazilir; gereksiz ledc guncellemesi engellenir.
 static void applyPwmIfChanged()
 {
   if (pwmEnabled != lastPwmEnabled || pwmDutyPercent != lastDuty) {
@@ -123,6 +135,8 @@ static float duty_to_amps(int dutyPercent)
 
 void setup()
 {
+  // Baslatma sirasi bilincli tutuldu:
+  // 1) web/OTA, 2) OLED, 3) sensorler, 4) role, 5) pilot
   Serial.begin(115200);
   delay(200);
   Serial.println("BOOT OK");
@@ -162,6 +176,13 @@ void setup()
 
 void loop()
 {
+  // Ana dongu akisi:
+  // 1) arka plan servisleri
+  // 2) CP state olcumu
+  // 3) enerji / seans hesabi
+  // 4) ekran ve LED guncellemesi
+  // 5) PWM ve role kararinin uygulanmasi
+
   // Web sunucu döngüsü
   web_loop();
 
@@ -183,9 +204,7 @@ void loop()
   // Kablo: A değilse takılı kabul
   bool cableConnected = (m.stateStable != "A");
 
-  // OLED’de gösterilecek akım:
-  // ESKİ: float amps = pwmEnabled ? duty_to_amps(pwmDutyPercent) : 0.0f;
-  // YENİ: Sensörden gelen gerçek ölçüm değeri
+  // Sensor verisi burada okunur. OLED ve web tarafina giden anlik akim kaynagi burasidir.
   float ia = current_sensor_get_irms_a();
   float ib = current_sensor_get_irms_b();
   float ic = current_sensor_get_irms_c();
@@ -193,13 +212,14 @@ void loop()
   bool chargingState = (m.stateStable == "C" || m.stateStable == "D");
   bool accountingEnabled = relaySet && pwmEnabled && chargingState;
 
-  // Enerji/akim sadece gerçek şarj penceresinde hesaplansın.
+  // Enerji ve akim sadece role cekili + PWM aktif + state C/D oldugunda gecerli sayilir.
   if (!accountingEnabled) {
     ia = 0.0f;
     ib = 0.0f;
     ic = 0.0f;
   }
 
+  // Faz sayisi ve guc hesabi burada cikartilir.
   uint32_t nowMs = millis();
   float iMax = ia;
   if (ib > iMax) iMax = ib;
@@ -211,6 +231,7 @@ void loop()
   float vLineLine = 400.0f;
   float vPhase = vLineLine / 1.732f;
   float powerW = 0.0f;
+  // Seans baslatma / bitirme ve gecmise yazma mantigi burada yurur.
   if (anyPhase) {
     powerW = threePhase ? (vPhase * (ia + ib + ic)) : (vPhase * iMax);
   }
@@ -282,7 +303,7 @@ void loop()
   g_chargeSeconds = chargeSeconds;
   g_phaseCount = threePhase ? 3 : 1;
 
-  // OLED ?iz
+  // OLED ekrani burada sadece okunabilir son verilerle beslenir.
   oled_draw(m.stateStable, ia, ib, ic, powerW, energyKWh, chargeSeconds, relaySet, staOk, cableConnected);
   // LED map:
   // - STATE_LED_PIN (GPIO8): C'de normal blink, D'de cift flash
@@ -320,7 +341,7 @@ void loop()
 
 
 
-  // Hedef PWM durumlarını belirleyelim
+  // IEC state'e gore hedef PWM durumu burada belirlenir.
   bool nextPwmEnabled = false;
   int nextDuty = 0;
 
@@ -340,7 +361,7 @@ void loop()
     nextDuty = PWM_DUTY_32A;
   }
 
-  // Kullanıcı hızlı kontrol katmanı
+  // Web arayuzundeki manuel START / STOP istegi burada ana kararin ustune yazilir.
   if (g_chargeMode == 2) { // STOP
     nextPwmEnabled = false;
     nextDuty = 0;
@@ -368,6 +389,6 @@ void loop()
     relay_handle_state_pulse(m.stateStable);
   }
 
-  // Röle kontrolü: Sadece C veya D durumunda ve PWM aktifken çalışır
+  // Son role karari burada verilir.
   relay_update_auto(m.stateStable, pwmEnabled, pwmDutyPercent);
 }

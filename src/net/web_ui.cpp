@@ -14,10 +14,21 @@
 #include "pilot/pilot.h"
 #include "io/relay.h"
 
-// EKSÄ°K OLAN KÃœTÃœPHANE
 #include "io/current_sensor.h"
 
-// DeÄŸiÅŸkenleri dÄ±ÅŸarÄ±dan alÄ±yoruz
+// Bu dosya 4 ana parcadan olusur:
+// 1) Wi-Fi / OTA yardimcilari
+// 2) Sayfaya gomulu HTML/CSS/JS
+// 3) HTTP handler'lari
+// 4) Route kayitlari
+//
+// Nereden mudahale edecegini hizli bulmak icin:
+// - web ekrani gorunumu -> USER_HTML / MAIN_HTML sabitleri
+// - yeni API endpoint -> yeni handleX fonksiyonu + web_init icinde server.on(...)
+// - status JSON alani -> handleStatus()
+// - kalibrasyon uygulama akisi -> handleCalibApply()
+
+// main.cpp ve relay.cpp tarafindaki runtime degiskenler buradan okunur / yazilir.
 extern float CP_DIVIDER_RATIO;
 extern float TH_A_MIN, TH_B_MIN, TH_C_MIN, TH_D_MIN, TH_E_MIN;
 extern float marginUp, marginDown;
@@ -226,6 +237,7 @@ static void setupArduinoOta() {
   Serial.println(kOtaHostname);
 }
 
+// Web API'de gelen tamsayi parametreleri guvenli aralikta tutar.
 static int clampIntArg(const String& v, int minVal, int maxVal) {
   long parsed = v.toInt();
   if (parsed < minVal) return minVal;
@@ -1612,6 +1624,7 @@ static void handleManifest() { server.send_P(200, "application/manifest+json", M
 static void handleServiceWorker() { server.send_P(200, "application/javascript", SERVICE_WORKER_JS); }
 static void handleAppIcon() { server.send_P(200, "image/svg+xml", APP_ICON_SVG); }
 
+// Status endpoint'i kullanici panelinin ana veri kaynagidir.
 static void handleStatus() {
   auto m = pilot_get();
   uint32_t nowMs = millis();
@@ -1717,6 +1730,7 @@ static void handleStatus() {
   server.send(200, "application/json", json);
 }
 
+// Gecmis seanslar icin ayri JSON endpoint.
 static void handleHistory() {
   char json[4096];
   int n = 0;
@@ -1748,6 +1762,7 @@ static void handleHistory() {
   server.send(200, "application/json", json);
 }
 
+// Kullanici panelindeki AUTO / START / STOP komutu burada islenir.
 static void handleChargeCmd() {
   if (!server.hasArg("m")) {
     server.send(400, "text/plain", "missing m");
@@ -1773,6 +1788,7 @@ static void handleChargeCmd() {
   server.send(200, "text/plain", "OK");
 }
 
+// Enerji ve gecmis sifirlama endpoint'i.
 static void handleDataReset() {
   bool clearNow = true;
   bool clearHistory = true;
@@ -1799,6 +1815,7 @@ static void handleDataReset() {
   server.send(200, "application/json", json);
 }
 
+// Web admin panelinden gelen CP / relay / timing ayarlari burada uygulanir.
 static void handleCalibApply() {
   if (!requireAdminAuth()) return;
   if (server.hasArg("lInt")) {
@@ -1856,6 +1873,7 @@ static void handlePulseSet() {
 
 
 void web_init() {
+  // Boot sirasinda ag, OTA, route ve web server bu noktada ayaga kalkar.
   setupWiFi();
   setupArduinoOta();
   s_resetPrefsReady = s_resetPrefs.begin("evse", false);
@@ -1868,6 +1886,7 @@ void web_init() {
   pinMode(MOSFET_SET_PIN, OUTPUT);
   digitalWrite(MOSFET_RESET_PIN, LOW);
   digitalWrite(MOSFET_SET_PIN, LOW);
+  // HTTP route kayitlari.
   server.on("/", HTTP_GET, handleRoot);
   server.on("/admin", HTTP_GET, handleAdmin);
   server.on("/ping", HTTP_GET, handlePing);
@@ -1893,6 +1912,7 @@ void web_init() {
 }
 
 void web_loop() {
+  // Arka plan servisleri her loop'ta buradan yurutulur.
   ArduinoOTA.handle();
   server.handleClient();
   ElegantOTA.loop();

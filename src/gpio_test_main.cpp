@@ -1,5 +1,8 @@
 #include <Arduino.h>
 
+// Bu dosya ana EVSE firmware'i degildir.
+// [env:esp32-s3-gpio-test] secilince yalnizca LED / GPIO testi icin derlenir.
+
 constexpr uint8_t kLedPins[] = {8, 17, 18};
 constexpr uint8_t kLedOn = HIGH;
 constexpr uint8_t kLedOff = LOW;

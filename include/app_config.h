@@ -1,6 +1,9 @@
 #pragma once
 #include <Arduino.h>
 
+// Bu dosya main.cpp icindeki runtime ayarlari baska modullere acar.
+// Yeni bir ayari web/pilot/relay tarafina tasiyacaksan extern olarak buraya ekle.
+
 // Kalibrasyon / esikler (webden degisebilir)
 extern float CP_DIVIDER_RATIO;
 

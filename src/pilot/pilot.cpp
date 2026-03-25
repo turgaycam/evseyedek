@@ -2,6 +2,9 @@
 #include "app_pins.h"
 #include "app_config.h"
 
+// CP state cikarma ve PWM uygulama modulu.
+// Esik degerleri main.cpp'de tutulur, burada yorumlanir.
+
 // PWM kontrol değişkenleri
 bool pwmEnabled     = false;   // boot'ta kapalı başlayacağız
 int  pwmDutyPercent = PWM_DUTY_32A; // sabit dursun (istersen 100 yaparsın)
@@ -12,6 +15,8 @@ static float  cpHighVolt = 0.0f, cpLowVolt = 0.0f;
 static String measuredStateRaw = "A";
 static String measuredState    = "A";
 
+// CP high seviyesine bakarak IEC state karari burada verilir.
+// TH_* ve margin degerleri web panelinden degistirilince bu fonksiyonu etkiler.
 static String decideStateHysteresis(float v, const String& cur)
 {
   // A: v >= TH_A_MIN
@@ -46,6 +51,7 @@ static String decideStateHysteresis(float v, const String& cur)
 
 void pilot_init()
 {
+  // CP PWM cikisi ve ADC girisi ayni moduldedir.
   analogReadResolution(12);
   pinMode(CP_ADC_PIN, INPUT);
 
@@ -76,6 +82,7 @@ void pilot_apply_pwm()
 
 void pilot_update()
 {
+  // Basit min/max yaklasimi ile CP sinyalinin high/low seviyeleri olculur.
   const int N = 200;
   int minRaw = 4095;
   int maxRaw = 0;
@@ -94,7 +101,7 @@ void pilot_update()
 
   measuredStateRaw = decideStateHysteresis(cpHighVolt, measuredState);
 
-  // STABLE filtresi
+  // State birkac ard arda okumada ayni gelirse stable kabul edilir.
   static int cnt = 0;
   static String last = "A";
 

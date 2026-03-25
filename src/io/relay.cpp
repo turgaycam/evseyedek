@@ -2,7 +2,10 @@
 #include "app_pins.h"
 #include <Arduino.h>
 
-// Web arayüzünden gelen gecikme değerleri (Dışarıdan erişilebilir olması için extern de yapılabilir)
+// Role kontrol modulu.
+// Web panelinden ayarlanan on/off gecikmeleri burada uygulanir.
+
+// Web arayuzunden gelen gecikme degerleri.
 uint32_t relayOnDelayMs  = 1000; // Varsayılan 1 saniye (B -> C)
 uint32_t relayOffDelayMs = 500;  // Varsayılan 0.5 saniye (C -> B)
 
@@ -79,7 +82,7 @@ void relay_init()
   relayOn = false;
   applyRelayOutputs(false);
 }
-// relay.cpp içine ekle
+// Role cikislarini cok sik ac/kapa yapmamak icin alt koruma.
 void relay_set_min_switch_ms(uint32_t ms)
 {
   minSwitchMs = ms;
@@ -123,7 +126,8 @@ void relay_update_auto(const String& stableState, bool pwmEnabled, int pwmDutyPe
 {
   if (!relayAutoEnabled) return;
 
-  // 1. Rölenin olması gereken anlık durumunu belirle
+  // Auto rolenin ana karari burada verilir.
+  // State C/D + PWM aktif degilse role cekilmez.
   bool shouldBeOn = (stableState == "C" || stableState == "D") && pwmEnabled && pwmDutyPercent > 0;
 
   // 2. Eğer mevcut durum hedef durumla zaten aynıysa beklemeyi sıfırla
@@ -145,11 +149,11 @@ void relay_update_auto(const String& stableState, bool pwmEnabled, int pwmDutyPe
   uint32_t now = millis();
   uint32_t elapsed = now - stateChangeStartTime;
   
-  // Hangi gecikmeyi kullanacağız? (Açarken OnDelay, kapatırken OffDelay)
+  // Acarken onDelay, kapatirken offDelay kullanilir.
   uint32_t activeDelay = pendingTargetState ? relayOnDelayMs : relayOffDelayMs;
 
   if (elapsed >= activeDelay) {
-    // Min Switch Koruması (Donanımsal koruma, hala gerekliyse)
+    // Role donanimi icin minimum anahtarlama araligi korumasi.
     if (minSwitchMs > 0 && (now - lastSwitchMs) < minSwitchMs) return;
 
     // SÜRE DOLDU - Röleyi güncelle
@@ -165,6 +169,7 @@ void relay_update_auto(const String& stableState, bool pwmEnabled, int pwmDutyPe
 void relay_handle_state_pulse(const String& stableState)
 {
 #if RELAY_USE_LATCH_PINS && RELAY_LATCH_FOLLOW_STATE
+  // Latch donanim kullaniliyorsa SET/RESET pulse karari stable state degisimine gore verilir.
   bool latchSetState = isLatchSetState(stableState);
 
   if (!latchStateReady) {

@@ -1,6 +1,9 @@
 #pragma once
 #include <Arduino.h>
 
+// Proje genelinde hafif log makrolari.
+// Daha fazla log gerekiyorsa APP_LOG_LEVEL degeri platformio.ini icinden de override edilebilir.
+
 // 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG
 #ifndef APP_LOG_LEVEL
 #define APP_LOG_LEVEL 2

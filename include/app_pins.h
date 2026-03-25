@@ -1,15 +1,19 @@
 #pragma once
 #include <Arduino.h>
 
+// Donanim pin haritasi burada tutulur.
+// Yeni karta gectiginde ilk bakman gereken dosya budur.
+
 // OLED (I2C: Wire.begin(SDA, SCL))
 #define OLED_SDA 14
 #define OLED_SCL 13
 
-// IO
+// CP / role / guc elektroniigi hatlari.
 #define CP_PWM_PIN       2
 #define CP_ADC_PIN       1
 #define RELAY_PIN        3
 
+// 3 faz akim sensor girisleri.
 #define CURRENT_SENSOR_PIN_A 4
 #define CURRENT_SENSOR_PIN_B 5
 #define CURRENT_SENSOR_PIN_C 6
@@ -30,7 +34,8 @@
 // Role modulu aktif-low: LOW=CEK, HIGH=BIRAK
 #define RELAY_ACTIVE_LOW 0
 
-// Farkli donanim varyantlari icin cikis secimi:
+// Farkli role donanimlari icin cikis secimi.
+// Yeni role karti geldiginde once bu blok kontrol edilir.
 // 1 = klasik role cikisi kullan
 // 1 = SET/RESET latch cikislarini kullan
 // 1 = latch pulse'lari dogrudan stable state gecisinden tetiklenir
@@ -40,10 +45,10 @@
 #define RELAY_LATCH_FOLLOW_STATE 1
 #define RELAY_LATCH_PULSE_MS 100
 
-// PWM
+// CP PWM surucu ayarlari.
 #define PWM_CHANNEL      0
 #define PWM_FREQ         1000
 #define PWM_RESOLUTION   10
 
-// Istersen sabit kullanirsin; ama web bunu degistirmiyor
+// 32A limiti icin IEC 61851'e gore yaklasik duty.
 #define PWM_DUTY_32A     53

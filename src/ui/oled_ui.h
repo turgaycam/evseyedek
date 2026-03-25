@@ -3,15 +3,16 @@
 
 #include <Arduino.h>
 
+// OLED gorunum modulu.
+// Layout degisiklikleri dogrudan oled_ui.cpp icinde yapilir.
+
 // Ekranı ve I2C'yi başlatır
 void oled_init();
 
-// Ekranı günceller
-// stateStable: A, B, C durumu
-// amps: Ölçülen akım (current_sensor'den gelen)
-// relayOn: Röle açık mı kapalı mı
-// staConnected: Wi-Fi bağlı mı
-// cableConnected: Kablo takılı mı
+// Ekrani son durum verileriyle gunceller.
+// stateStable: pilot state'i
+// ia/ib/ic: faz akimlari
+// powerW / energyKwh / chargeSeconds: main.cpp'deki hesaplanan ozet veriler
 void oled_draw(const String& stateStable,
                float ia,
                float ib,

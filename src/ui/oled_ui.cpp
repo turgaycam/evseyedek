@@ -3,6 +3,13 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 
+// OLED arayuz modulu.
+// Bu dosyanin ic yapisi:
+// 1) label / format helper'lari
+// 2) sag ust state strip
+// 3) orta ana panel
+// 4) alt metrik satiri
+
 // 1.3" 128x64 SH1106 I2C
 // Reset pini yoksa U8X8_PIN_NONE kullanilir.
 static U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(
@@ -16,6 +23,7 @@ static const float kPhaseOnThresholdA = 0.90f;
 static const uint32_t kStateBlinkMs = 800;
 static const uint32_t kErrorBlinkMs = 500;
 
+// OLED adresini 0x3C / 0x3D arasindan bularak calismaya baslar.
 static bool probe_oled_addr(uint8_t addr)
 {
   Wire.beginTransmission(addr);
@@ -60,6 +68,7 @@ static const char* phase_label(float ia, float ib, float ic)
   return "--";
 }
 
+// OLED'de buyuk gosterilecek akim degeri icin aktif fazlarin ortalamasini kullanir.
 static float display_current(float ia, float ib, float ic)
 {
   float sum = 0.0f;
@@ -82,6 +91,7 @@ static float display_current(float ia, float ib, float ic)
   return sum / (float)count;
 }
 
+// Alt satirdaki sureyi kisa tutmak icin HH:MM formatina cevirir.
 static void format_duration_hhmm(uint32_t chargeSeconds, char* out, size_t outSize)
 {
   uint32_t hh = chargeSeconds / 3600;
@@ -97,6 +107,7 @@ static void draw_centered_text(int y, const char* text)
   u8g2.drawStr(x, y, text);
 }
 
+// Sag ustteki mini state gostergesi.
 static void draw_state_box(int x, const char* text, bool active, bool blinkOn)
 {
   const int y = 1;
@@ -117,6 +128,7 @@ static void draw_state_box(int x, const char* text, bool active, bool blinkOn)
   u8g2.setDrawColor(1);
 }
 
+// Sag ustte sadece aktif state yanip soner.
 static void draw_state_strip(const String& stateStable)
 {
   const bool blinkOn = ((millis() / kStateBlinkMs) % 2U) == 0U;
@@ -127,6 +139,7 @@ static void draw_state_strip(const String& stateStable)
   draw_state_box(118, "D", stateStable == "D", blinkOn);
 }
 
+// Baslik solda state yazisi, sagda mini state strip'ten olusur.
 static void draw_header(const String& stateStable)
 {
   u8g2.setFont(u8g2_font_6x10_tf);
@@ -135,6 +148,7 @@ static void draw_header(const String& stateStable)
   u8g2.drawHLine(0, 12, 128);
 }
 
+// Orta panel: bekleme / sarj / hata senaryolarinin ana mesajini cizer.
 static void draw_main_panel(const String& stateStable, float ia, float ib, float ic)
 {
   const bool errorState = is_error_state(stateStable);
@@ -184,6 +198,7 @@ static void draw_main_panel(const String& stateStable, float ia, float ib, float
   }
 }
 
+// Alt satir kisa teknik ozet icindir.
 static void draw_metrics(float ia,
                          float ib,
                          float ic,
@@ -246,6 +261,7 @@ void oled_draw(const String& stateStable,
 {
   if (!oledAvailable) return;
 
+  // Bu fonksiyon yalnizca cizim yapar; karar mantigi main.cpp tarafinda uretilir.
   u8g2.clearBuffer();
   draw_header(stateStable);
   draw_main_panel(stateStable, ia, ib, ic);
