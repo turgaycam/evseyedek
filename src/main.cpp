@@ -8,6 +8,12 @@
 #include "net/web_ui.h"
 #include "ui/oled_ui.h"
 #include "io/current_sensor.h"
+#include "OTA_Manager.h"
+
+// OTA manifest URL: GitHub ana branch'taki version.json
+static constexpr char kOtaManifestUrl[] = "https://raw.githubusercontent.com/turgaycam/evseyedek/main/version.json";
+// Sertifika sabitlemek istersen SHA1 fingerprint'i buraya yaz.
+static constexpr char kGitHubFingerprint[] = "";
 
 // Bu dosya projenin merkez akisidir.
 // Neyi nereden degistirecegini hizli bulmak icin:
@@ -152,6 +158,7 @@ void setup()
 
   // Web + OTA
   web_init();
+  OTA_Manager::begin(kOtaManifestUrl, 60UL * 60UL * 1000UL, kGitHubFingerprint);
 
   // OLED
   oled_init();
@@ -186,6 +193,7 @@ void loop()
 
   // Web sunucu dongusu
   web_loop();
+  OTA_Manager::loop();
 
   // Akim sensoru dongusu
   current_sensor_loop();

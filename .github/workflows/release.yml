@@ -1,0 +1,87 @@
+name: build-and-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: |
+          pip install --upgrade pip
+          pip install --upgrade platformio
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          CLEAN_VERSION=${TAG#v}
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "clean=${CLEAN_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build firmware (esp32-s3-devkitc-1)
+        id: build
+        env:
+          FW_VERSION: ${{ steps.version.outputs.clean }}
+        run: |
+          pio run -e esp32-s3-devkitc-1 --project-option "build_flags += -DCURRENT_VERSION=\\\"${FW_VERSION}\\\""
+          echo "bin_path=.pio/build/esp32-s3-devkitc-1/firmware.bin" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare version.json
+        id: manifest
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          CLEAN_VERSION: ${{ steps.version.outputs.clean }}
+          REPO: ${{ github.repository }}
+        run: |
+          BIN_URL="https://github.com/${REPO}/releases/download/${TAG}/firmware.bin"
+          echo "{\"version\": \"${CLEAN_VERSION}\", \"url\": \"${BIN_URL}\"}" > version.json
+          echo "version=${CLEAN_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-build
+          path: |
+            ${{ steps.build.outputs.bin_path }}
+            version.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Firmware ${{ steps.manifest.outputs.version }}"
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ${{ steps.build.outputs.bin_path }}
+            version.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update version.json on default branch
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          cp version.json /tmp/version.json
+          git checkout ${{ github.event.repository.default_branch }} -f
+          cp /tmp/version.json version.json
+          git add version.json
+          git commit -m "chore: bump version.json to ${{ steps.manifest.outputs.version }}" || true
+          git push origin HEAD:${{ github.event.repository.default_branch }}
