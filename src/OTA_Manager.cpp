@@ -16,6 +16,7 @@ struct OtaContext {
   String lastError;
   uint32_t checkIntervalMs = 0;
   uint32_t lastCheckMs = 0;
+  uint32_t deferUntilMs = 0;
   bool checkRequested = false;
   bool lastUpdateOk = false;
   bool pendingVerify = false;
@@ -112,7 +113,7 @@ static bool fetchManifest(Manifest& out) {
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(8000);
+  http.setTimeout(3000);
 
   Serial.printf("[OTA] Manifest GET: %s\n", ctx.manifestUrl.c_str());
   if (!http.begin(client, ctx.manifestUrl)) {
@@ -176,6 +177,9 @@ static bool performUpdate(const String& url) {
 
 static void handleUpdateCheck() {
   if (!ctx.checkRequested && ctx.checkIntervalMs > 0 && (millis() - ctx.lastCheckMs) < ctx.checkIntervalMs) {
+    return;
+  }
+  if (!ctx.checkRequested && ctx.deferUntilMs != 0 && (int32_t)(ctx.deferUntilMs - millis()) > 0) {
     return;
   }
   if (!wifiReady()) return;
@@ -254,6 +258,13 @@ void loop() {
 
 void triggerCheckNow() {
   ctx.checkRequested = true;
+}
+
+void deferPeriodicChecks(uint32_t ms) {
+  uint32_t until = millis() + ms;
+  if ((int32_t)(until - ctx.deferUntilMs) > 0) {
+    ctx.deferUntilMs = until;
+  }
 }
 
 const char* currentVersion() {

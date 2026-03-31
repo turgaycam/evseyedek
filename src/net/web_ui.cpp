@@ -274,6 +274,11 @@ static bool requireAdminAuth() {
   return false;
 }
 
+static void noteWebActivity() {
+  // Kullanici aktifken periyodik OTA kontrolu web sunucusunu bloklamasin.
+  OTA_Manager::deferPeriodicChecks(15000);
+}
+
 static const char* chargeModeLabel(int mode) {
   if (mode == 1) return "START";
   if (mode == 2) return "STOP";
@@ -925,17 +930,6 @@ body.state-D .stateGlyph{
   letter-spacing:1.4px;
   text-transform:uppercase;
 }
-.testMark{
-  margin-bottom:10px;
-  padding:10px 12px;
-  border:1px solid #ffd166;
-  border-radius:16px;
-  background:#3c2a05;
-  color:#ffe4a3;
-  text-align:center;
-  font-weight:700;
-  letter-spacing:1.2px;
-}
 @keyframes pulseIcon{
   0%,100%{transform:translateY(1px) scale(1)}
   50%{transform:translateY(1px) scale(1.08)}
@@ -958,7 +952,6 @@ body.state-D .stateGlyph{
 <meta name="apple-mobile-web-app-title" content="RotosisEVSE">
 </head><body class="state-A">
 <div class="app">
-  <div class="testMark">MUHAMMED TEST</div>
   <div class="top">
     <div>
       <div class="brand">RotosisEVSE</div>
@@ -1108,13 +1101,7 @@ body.state-D .stateGlyph{
     <div class="meta">
       <div class="metaLine" id="wifiLine">Wi-Fi: -</div>
       <div class="metaLine"><span id="host">-</span> | <span id="ip">-</span></div>
-      <div class="metaLine">FW: <span id="otaCurVer">-</span> | Remote: <span id="otaRemoteVer">-</span></div>
-      <div class="metaLine">OTA: <span id="otaStatus">-</span> | Son kontrol: <span id="otaAge">-</span></div>
-      <div class="metaLine muted" id="otaError">Hata yok</div>
       <div class="metaLine muted" id="ts">-</div>
-      <div class="heroMiniRow" style="margin-top:10px">
-        <button class="sync" style="width:100%" onclick="runOtaCheck()">OTA Simdi Kontrol Et</button>
-      </div>
     </div>
   </section>
 </div>
@@ -1236,17 +1223,6 @@ function renderAlarm(level,text,state,staOk){
   setText("alarmText",text||"Sistem normal");
   setText("alarmMeta","Durum kodu "+state+" | "+(staOk?"Wi-Fi ba\u011fl\u0131":"Wi-Fi yok"));
 }
-function fmtAge(ms){
-  const sec=Math.max(0,Math.round((Number(ms)||0)/1000));
-  if(sec===0) return "hemen simdi";
-  if(sec<60) return sec+" sn once";
-  const min=Math.floor(sec/60);
-  const rem=sec%60;
-  return min+" dk "+rem+" sn once";
-}
-function runOtaCheck(){
-  fetch('/ota_check',{cache:'no-store'}).then(()=>setText('otaStatus','check_requested')).catch(()=>setText('otaStatus','check_request_failed'));
-}
 function pull(){
   fetch('/status',{cache:'no-store'}).then(r=>r.json()).then(d=>{
     const ia=Number(d.ia)||0, ib=Number(d.ib)||0, ic=Number(d.ic)||0;
@@ -1278,11 +1254,6 @@ function pull(){
     if(d.state!==undefined) updateState(d.state);
     if(d.ip!==undefined) setText('ip',d.ip);
     if(d.host!==undefined) setText('host',d.host);
-    if(d.otaCur!==undefined) setText('otaCurVer',d.otaCur);
-    if(d.otaRemote!==undefined) setText('otaRemoteVer',d.otaRemote);
-    if(d.otaStatus!==undefined) setText('otaStatus',d.otaStatus);
-    if(d.otaAgeMs!==undefined) setText('otaAge',fmtAge(d.otaAgeMs));
-    if(d.otaErr!==undefined) setText('otaError',d.otaErr || "Hata yok");
     setGauge(loadPct);
     setText('ts',"Son g\u00fcncelleme: "+new Date().toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit",second:"2-digit"}));
     const wifiText=(d.wifiSsid&&d.wifiSsid!=="-") ? ("Wi-Fi: "+d.wifiSsid+((d.wifiLoc&&d.wifiLoc!=="-")?" / "+d.wifiLoc:"")) : "Wi-Fi: ba\u011fl\u0131 de\u011fil";
@@ -1427,7 +1398,6 @@ body{font-family:Arial;margin:0;background:#0b1220;color:#e8eefc}
 .wrap{display:grid;grid-template-columns:1.2fr .8fr;gap:12px;padding:12px}
 @media(max-width:900px){.wrap{grid-template-columns:1fr}}
 .card{background:#111a2b;border:1px solid #20304a;border-radius:12px;padding:12px}
-.panelTestMark{grid-column:1 / -1;background:#3c2a05;border:1px solid #ffd166;border-radius:12px;padding:10px 12px;color:#ffe4a3;text-align:center;font-weight:700;letter-spacing:1.2px}
 h2{margin:0 0 10px 0;font-size:14px;color:#b7c5e6}
 .kv{display:grid;grid-template-columns:140px 1fr;gap:8px;margin:6px 0}
 .k{color:#b7c5e6;font-size:12px}
@@ -1448,7 +1418,6 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
 </style></head><body>
 
 <div class="wrap">
-  <div class="panelTestMark">MUHAMMED TEST</div>
   <div class="card">
     <h2>CANLI VERÄ°LER</h2>
     <div class="kv"><div class="k">State (Stable/Raw)</div><div class="v mono"><span id="sStb">-</span> / <span id="sRaw">-</span></div></div>
@@ -1518,12 +1487,20 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
     <div class="kv"><div class="k">Toplam</div><div class="v mono"><span id="rstTotal">0</span></div></div>
     <div class="kv"><div class="k">Anlik / Gecmis</div><div class="v mono"><span id="rstNow">0</span> / <span id="rstHist">0</span></div></div>
     <div class="kv"><div class="k">Son Islem</div><div class="v mono"><span id="rstLastMode">YOK</span> @ <span id="rstLastSec">0</span>s</div></div>
+    <div class="sep"></div>
+    <h2>OTA Teshis</h2>
+    <div class="kv"><div class="k">FW / Remote</div><div class="v mono"><span id="otaCurVer">-</span> / <span id="otaRemoteVer">-</span></div></div>
+    <div class="kv"><div class="k">Durum</div><div class="v mono"><span id="otaStatus">-</span></div></div>
+    <div class="kv"><div class="k">Son Kontrol</div><div class="v mono"><span id="otaAge">-</span></div></div>
+    <div class="kv"><div class="k">Hata</div><div class="v mono"><span id="otaError">Hata yok</span></div></div>
+    <div class="btns" style="margin-top:10px">
+      <button class="primary" onclick="runOtaCheckAdmin()">OTA SIMDI KONTROL ET</button>
+    </div>
 
 
 
   </div>
 </div>
-<div class="footerMark">turgay</div>
 
 
 <script>
@@ -1543,9 +1520,24 @@ function fmtTime(sec){
   return mm + ":" + ss;
 }
 
+function fmtOtaAge(ms){
+  const sec = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  if (sec === 0) return "hemen simdi";
+  if (sec < 60) return sec + " sn once";
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  return min + " dk " + rem + " sn once";
+}
+
+function runOtaCheckAdmin(){
+  fetch('/ota_check', {cache:'no-store'}).then(_ => {
+    document.getElementById('otaStatus').textContent = 'check_requested';
+  });
+}
+
 function pull(force=false){
   if(paused && !force) return;
-  fetch('/status').then(r=>r.json()).then(d=>{
+  fetch('/status',{cache:'no-store'}).then(r=>r.json()).then(d=>{
     document.getElementById('sStb').textContent = d.state;
     document.getElementById('sRaw').textContent = d.stateRaw;
     document.getElementById('cH').textContent = d.cpHigh.toFixed(2)+"V";
@@ -1569,6 +1561,11 @@ function pull(force=false){
     if(d.rstHist !== undefined) document.getElementById('rstHist').textContent = d.rstHist;
     if(d.rstLastMode !== undefined) document.getElementById('rstLastMode').textContent = d.rstLastMode;
     if(d.rstLastSec !== undefined) document.getElementById('rstLastSec').textContent = d.rstLastSec;
+    if(d.otaCur !== undefined) document.getElementById('otaCurVer').textContent = d.otaCur;
+    if(d.otaRemote !== undefined) document.getElementById('otaRemoteVer').textContent = d.otaRemote;
+    if(d.otaStatus !== undefined) document.getElementById('otaStatus').textContent = d.otaStatus;
+    if(d.otaAgeMs !== undefined) document.getElementById('otaAge').textContent = fmtOtaAge(d.otaAgeMs);
+    if(d.otaErr !== undefined) document.getElementById('otaError').textContent = d.otaErr && d.otaErr.length ? d.otaErr : 'Hata yok';
 
     // Ust rozetler
     const st = (d.state || "-");
@@ -1665,8 +1662,12 @@ static void setupWiFi() {
 
 // 3) HTTP handler'lari.
 // Her endpoint kendi verisini veya komutunu burada uretir.
-static void handleRoot() { server.send_P(200, "text/html", USER_HTML); }
+static void handleRoot() {
+  noteWebActivity();
+  server.send_P(200, "text/html", USER_HTML);
+}
 static void handleAdmin() {
+  noteWebActivity();
   if (!requireAdminAuth()) return;
   server.send_P(200, "text/html", MAIN_HTML);
 }
@@ -1681,6 +1682,7 @@ static void handleOtaCheck() {
 
 // Status endpoint'i kullanici panelinin ana veri kaynagidir.
 static void handleStatus() {
+  noteWebActivity();
   auto m = pilot_get();
   uint32_t nowMs = millis();
 
@@ -1739,7 +1741,7 @@ static void handleStatus() {
     alarmTxt = "Wi-Fi baglantisi yok";
   }
 
-  char json[1792];
+  char json[2304];
   snprintf(
     json, sizeof(json),
     "{\"lInt\":%d,\"onD\":%lu,\"offD\":%lu,\"stable\":%d,"
@@ -1798,6 +1800,7 @@ static void handleStatus() {
 
 // Gecmis seanslar icin ayri JSON endpoint.
 static void handleHistory() {
+  noteWebActivity();
   char json[4096];
   int n = 0;
   n += snprintf(

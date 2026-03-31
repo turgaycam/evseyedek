@@ -19,6 +19,7 @@ void loop();
 
 // Manuel tetikleme (ornek: web komutundan). Wi-Fi bagli ise hemen kontrol eder.
 void triggerCheckNow();
+void deferPeriodicChecks(uint32_t ms);
 
 // Son bilinen durum ve versiyonlar.
 const char* currentVersion();
