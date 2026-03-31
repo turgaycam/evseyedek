@@ -988,7 +988,6 @@ body.state-D .stateGlyph{
     <div>
       <div class="brand">RotosisEVSE</div>
       <div class="brandSub">Mobil ana ekran</div>
-      <div class="brandSub" style="color:#f6b7ff">TEST MUHAMMED</div>
     </div>
     <div class="sync wait" id="sync">WAIT</div>
   </div>
@@ -1541,7 +1540,6 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
   <div class="heroTop">
     <div style="display:flex;gap:8px;align-items:center">
       <h2 style="margin:0">RotosisEVSE</h2>
-      <span class="badge" style="background:#3c1d4a;border-color:#6b2a7a;color:#f6b7ff">TEST MUHAMMED</span>
       <span class="badge" id="badgeState">STATE:-</span>
     </div>
     <span class="badge" id="badgeRelay">R: -</span>
