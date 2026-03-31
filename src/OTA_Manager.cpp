@@ -155,6 +155,16 @@ static bool fetchManifest(Manifest& out) {
 }
 
 static bool performUpdate(const String& url) {
+  const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
+  if (!next ||
+      (next->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
+       next->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_1)) {
+    ctx.lastStatus = "update_target_invalid";
+    ctx.lastError = "OTA hedef partition guvenli degil (yalnizca ota_0/ota_1 izinli)";
+    Serial.println("[OTA] RED: OTA sadece ota_0/ota_1 partitionlarina yazabilir");
+    return false;
+  }
+
   WiFiClientSecure client;
   configureClient(client);
 
@@ -182,6 +192,22 @@ static bool performUpdate(const String& url) {
       return true;
   }
   return false;
+}
+
+static bool switchBootToFactory() {
+  const esp_partition_t* factory =
+      esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
+  if (!factory) {
+    Serial.println("[OTA] Factory partition bulunamadi");
+    return false;
+  }
+  esp_err_t err = esp_ota_set_boot_partition(factory);
+  if (err != ESP_OK) {
+    Serial.printf("[OTA] Factory boot secilemedi: %s\n", esp_err_to_name(err));
+    return false;
+  }
+  Serial.println("[OTA] Bir sonraki boot: FACTORY");
+  return true;
 }
 
 static String toLowerHex(const uint8_t* buf, size_t len) {
@@ -349,9 +375,14 @@ static void handleRollbackGuard() {
   }
 
   if ((now - ctx.bootMs) > kVerifyTimeoutMs) {
-    ctx.lastStatus = "healthcheck_timeout_rollback";
-    ctx.lastError = "Wi-Fi/web/heartbeat dogrulanamadi, rollback";
-    Serial.println("[OTA] 30 sn icinde heartbeat yok; rollback tetikleniyor");
+    ctx.lastStatus = "healthcheck_timeout_factory";
+    ctx.lastError = "30 sn onay yok, factory partitiona donuluyor";
+    Serial.println("[OTA] 30 sn icinde onay yok; FACTORY fallback tetikleniyor");
+    if (switchBootToFactory()) {
+      delay(100);
+      ESP.restart();
+    }
+    // Factory secimi basarisizsa klasik rollback fallback
     esp_err_t err = esp_ota_mark_app_invalid_rollback_and_reboot();
     if (err != ESP_OK) {
       Serial.printf("[OTA] rollback_and_reboot basarisiz: %s\n", esp_err_to_name(err));

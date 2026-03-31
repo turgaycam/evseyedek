@@ -18,9 +18,49 @@ static constexpr char kOtaManifestUrl[] = "https://raw.githubusercontent.com/tur
 // Sertifika sabitlemek istersen SHA1 fingerprint'i buraya yaz.
 static constexpr char kGitHubFingerprint[] = "";
 static constexpr uint8_t kMaxConsecutiveWdtResets = 3;
+static constexpr int kForceFactoryPin = 0;               // BOOT butonu (GPIO0)
+static constexpr uint32_t kForceFactoryHoldMs = 5000;    // 5 saniye
 
 static bool isWdtResetReason(esp_reset_reason_t r) {
   return r == ESP_RST_TASK_WDT || r == ESP_RST_INT_WDT || r == ESP_RST_WDT;
+}
+
+static bool switchBootToFactory() {
+  const esp_partition_t* factory = esp_partition_find_first(
+      ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
+  if (factory == nullptr) {
+    Serial.println("[BOOTCTL] Factory partition bulunamadi");
+    return false;
+  }
+  esp_err_t err = esp_ota_set_boot_partition(factory);
+  if (err != ESP_OK) {
+    Serial.printf("[BOOTCTL] Factory secilemedi: %s\n", esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+static void handleForceFactoryByButton() {
+  pinMode(kForceFactoryPin, INPUT_PULLUP);
+  uint32_t start = millis();
+  while (millis() - start < kForceFactoryHoldMs) {
+    if (digitalRead(kForceFactoryPin) != LOW) {
+      return; // Buton sure boyunca basili kalmadi
+    }
+    delay(10);
+  }
+
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) {
+    Serial.println("[BOOTCTL] Zaten factory partitionda");
+    return;
+  }
+
+  if (switchBootToFactory()) {
+    Serial.println("[BOOTCTL] GPIO0 ile force factory tetiklendi, yeniden baslatiliyor.");
+    delay(100);
+    esp_restart();
+  }
 }
 
 static void handleRescueFallbackIfNeeded() {
@@ -182,6 +222,7 @@ void setup()
   Serial.begin(115200);
   delay(200);
   Serial.println("BOOT OK");
+  handleForceFactoryByButton();
   handleRescueFallbackIfNeeded();
 
   pinMode(STATE_LED_PIN, OUTPUT);
