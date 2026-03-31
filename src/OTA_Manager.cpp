@@ -22,6 +22,8 @@ struct OtaContext {
   bool checkRequested = false;
   bool lastUpdateOk = false;
   bool pendingVerify = false;
+  bool builtinPendingVerify = false;
+  bool customTrialPending = false;
   bool markedValid = false;
   bool failureRecorded = false;
   uint32_t bootMs = 0;
@@ -40,6 +42,7 @@ constexpr uint32_t kBackoffStage1Ms = 5UL * 60UL * 1000UL;      // 5 dk
 constexpr uint32_t kBackoffStage2Ms = 2UL * 60UL * 60UL * 1000UL; // 2 saat
 constexpr uint32_t kBackoffStage3Ms = 3UL * 60UL * 60UL * 1000UL; // 3 saat
 constexpr uint32_t kUptimePersistIntervalMs = 60UL * 1000UL;
+constexpr uint8_t kTrialSubtypeUnset = 0xFF;
 
 struct RetryState {
   uint32_t uptimeBaseMs = 0;
@@ -89,6 +92,10 @@ static const char* imageStateLabel(esp_ota_img_states_t state) {
   }
 }
 
+static void syncPendingVerifyFlag() {
+  ctx.pendingVerify = ctx.builtinPendingVerify || ctx.customTrialPending;
+}
+
 static bool wifiReady() {
   return WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
 }
@@ -122,6 +129,82 @@ static void loadRetryState() {
   if (retry.nextAllowedMs != 0 && (int32_t)(now - retry.nextAllowedMs) >= 0) {
     retry.nextAllowedMs = 0;
     otaPrefs.putUInt("next_ms", 0);
+  }
+}
+
+static void clearCustomTrialState(bool clearRuntime = true) {
+  if (retry.prefsReady) {
+    otaPrefs.putUChar("trial_on", 0);
+    otaPrefs.putString("trial_ver", "");
+    otaPrefs.putString("trial_hb", "");
+    otaPrefs.putUChar("trial_sub", kTrialSubtypeUnset);
+    persistUptimeNow();
+  }
+  if (clearRuntime) {
+    ctx.customTrialPending = false;
+    syncPendingVerifyFlag();
+  }
+}
+
+static bool armCustomTrialState(const Manifest& manifest, const esp_partition_t* target) {
+  if (!retry.prefsReady || target == nullptr) {
+    Serial.println("[OTA] Custom trial state kaydedilemedi; Preferences hazir degil");
+    return false;
+  }
+
+  String heartbeat = manifest.healthUrl.length() ? manifest.healthUrl : ctx.manifestUrl;
+  otaPrefs.putUChar("trial_on", 1);
+  otaPrefs.putString("trial_ver", manifest.version);
+  otaPrefs.putString("trial_hb", heartbeat);
+  otaPrefs.putUChar("trial_sub", static_cast<uint8_t>(target->subtype));
+  persistUptimeNow();
+  Serial.printf("[OTA] Custom trial armed: version=%s target=%s\n",
+                manifest.version.c_str(),
+                partitionSubtypeLabel(target->subtype));
+  return true;
+}
+
+static void resumeCustomTrialState() {
+  if (!retry.prefsReady) return;
+  if (otaPrefs.getUChar("trial_on", 0) == 0) return;
+
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (!running) {
+    clearCustomTrialState();
+    return;
+  }
+
+  String armedVersion = otaPrefs.getString("trial_ver", "");
+  String heartbeat = otaPrefs.getString("trial_hb", "");
+  uint8_t armedSubtype = otaPrefs.getUChar("trial_sub", kTrialSubtypeUnset);
+  if (armedVersion.length() == 0) {
+    clearCustomTrialState();
+    return;
+  }
+
+  bool versionMatches = (armedVersion == CURRENT_VERSION);
+  bool partitionMatches = (armedSubtype == kTrialSubtypeUnset) ||
+                          (armedSubtype == static_cast<uint8_t>(running->subtype));
+
+  if (versionMatches && partitionMatches) {
+    ctx.customTrialPending = true;
+    syncPendingVerifyFlag();
+    if (heartbeat.length()) {
+      ctx.verifyHeartbeatUrl = heartbeat;
+      ctx.verifyHeartbeatResolved = true;
+    }
+    Serial.printf("[OTA] Custom trial aktif: version=%s partition=%s\n",
+                  armedVersion.c_str(),
+                  partitionSubtypeLabel(running->subtype));
+    return;
+  }
+
+  if (running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY || !versionMatches) {
+    Serial.printf("[OTA] Stale custom trial temizleniyor: armed=%s current=%s running=%s\n",
+                  armedVersion.c_str(),
+                  CURRENT_VERSION,
+                  partitionSubtypeLabel(running->subtype));
+    clearCustomTrialState();
   }
 }
 
@@ -286,7 +369,7 @@ static bool fetchManifest(Manifest& out) {
   return true;
 }
 
-static bool performUpdate(const String& url) {
+static bool performUpdate(const Manifest& manifest) {
   const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
   if (!next ||
       (next->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
@@ -297,15 +380,22 @@ static bool performUpdate(const String& url) {
     return false;
   }
 
+  if (!armCustomTrialState(manifest, next)) {
+    ctx.lastStatus = "trial_state_error";
+    ctx.lastError = "OTA deneme durumu kaydedilemedi";
+    return false;
+  }
+
   WiFiClientSecure client;
   configureClient(client);
 
   httpUpdate.rebootOnUpdate(true);
   httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  t_httpUpdate_return ret = httpUpdate.update(client, url);
+  t_httpUpdate_return ret = httpUpdate.update(client, manifest.url);
 
   switch (ret) {
     case HTTP_UPDATE_FAILED:
+      clearCustomTrialState(false);
       ctx.lastStatus = "update_failed";
       ctx.lastError = httpUpdate.getLastErrorString();
       Serial.printf("[OTA] Update HATA: %s (code %d)\n",
@@ -313,6 +403,7 @@ static bool performUpdate(const String& url) {
                     httpUpdate.getLastError());
       return false;
     case HTTP_UPDATE_NO_UPDATES:
+      clearCustomTrialState(false);
       ctx.lastStatus = "no_updates";
       ctx.lastError = "";
       Serial.println("[OTA] Yeni surum yok (HTTP_UPDATE_NO_UPDATES)");
@@ -444,16 +535,22 @@ static bool sendHeartbeat(const String& url) {
 }
 
 static bool markRunningAppValid() {
-  esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
-  if (err == ESP_OK) {
-    ctx.markedValid = true;
-    ctx.pendingVerify = false;
-    clearBackoff();
-    Serial.println("[OTA] Yeni firmware stabil olarak isaretlendi; rollback iptal");
-    return true;
+  if (ctx.builtinPendingVerify) {
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err != ESP_OK) {
+      Serial.printf("[OTA] Rollback iptal basarisiz: %s\n", esp_err_to_name(err));
+      return false;
+    }
   }
-  Serial.printf("[OTA] Rollback iptal basarisiz: %s\n", esp_err_to_name(err));
-  return false;
+
+  clearCustomTrialState(false);
+  ctx.markedValid = true;
+  ctx.builtinPendingVerify = false;
+  ctx.customTrialPending = false;
+  syncPendingVerifyFlag();
+  clearBackoff();
+  Serial.println("[OTA] Yeni firmware stabil olarak isaretlendi; rollback iptal");
+  return true;
 }
 
 static void handleUpdateCheck() {
@@ -487,7 +584,7 @@ static void handleUpdateCheck() {
       noteFailure("precheck_failed");
       return;
     }
-    ctx.lastUpdateOk = performUpdate(m.url);
+    ctx.lastUpdateOk = performUpdate(m);
     if (!ctx.lastUpdateOk) {
       noteFailure("update_failed");
     }
@@ -525,11 +622,13 @@ static void handleRollbackGuard() {
       ctx.failureRecorded = true;
     }
     if (switchBootToFactory()) {
+      clearCustomTrialState();
       persistUptimeNow();
       delay(100);
       ESP.restart();
     }
     // Factory secimi basarisizsa klasik rollback fallback
+    clearCustomTrialState();
     esp_err_t err = esp_ota_mark_app_invalid_rollback_and_reboot();
     if (err != ESP_OK) {
       Serial.printf("[OTA] rollback_and_reboot basarisiz: %s\n", esp_err_to_name(err));
@@ -562,15 +661,18 @@ void begin(const char* manifestUrl, uint32_t checkIntervalMs, const char* sha1Fi
   ctx.failureRecorded = false;
 
   loadRetryState();
+  resumeCustomTrialState();
 
   const esp_partition_t* running = esp_ota_get_running_partition();
   esp_ota_img_states_t state;
   esp_err_t err = esp_ota_get_state_partition(running, &state);
   if (err == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY) {
-    ctx.pendingVerify = true;
+    ctx.builtinPendingVerify = true;
+    syncPendingVerifyFlag();
     Serial.println("[OTA] Pending verify: rollback penceresi acik");
   } else {
-    ctx.pendingVerify = false;
+    ctx.builtinPendingVerify = false;
+    syncPendingVerifyFlag();
   }
 }
 
