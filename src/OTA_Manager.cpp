@@ -35,11 +35,13 @@ static bool wifiReady() {
 }
 
 static void configureClient(WiFiClientSecure& client) {
-  if (ctx.sha1Fingerprint.length() > 0) {
-    client.setFingerprint(ctx.sha1Fingerprint.c_str());
-  } else {
-    client.setInsecure();
-  }
+  // Development: setInsecure() kullan. Produksiyonda sertifika ekle:
+  // client.setSignedCertificate(x509);
+  // SHA1 fingerprint desteği: 
+  //   static const char* FP = "AA:BB:CC:DD:...";
+  //   const uint8_t fp[] = {0xAA, 0xBB, 0xCC, ...};
+  //   client.setFingerprint(fp);
+  client.setInsecure();
 }
 
 static int compareVersionTokens(const String& a, const String& b) {
