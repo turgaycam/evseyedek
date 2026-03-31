@@ -924,6 +924,17 @@ body.state-D .stateGlyph{
   letter-spacing:1.4px;
   text-transform:uppercase;
 }
+.testMark{
+  margin-bottom:10px;
+  padding:10px 12px;
+  border:1px solid #ffd166;
+  border-radius:16px;
+  background:#3c2a05;
+  color:#ffe4a3;
+  text-align:center;
+  font-weight:700;
+  letter-spacing:1.2px;
+}
 @keyframes pulseIcon{
   0%,100%{transform:translateY(1px) scale(1)}
   50%{transform:translateY(1px) scale(1.08)}
@@ -946,6 +957,7 @@ body.state-D .stateGlyph{
 <meta name="apple-mobile-web-app-title" content="RotosisEVSE">
 </head><body class="state-A">
 <div class="app">
+  <div class="testMark">ROTOSIS TEST</div>
   <div class="top">
     <div>
       <div class="brand">RotosisEVSE</div>
@@ -1392,6 +1404,7 @@ body{font-family:Arial;margin:0;background:#0b1220;color:#e8eefc}
 .wrap{display:grid;grid-template-columns:1.2fr .8fr;gap:12px;padding:12px}
 @media(max-width:900px){.wrap{grid-template-columns:1fr}}
 .card{background:#111a2b;border:1px solid #20304a;border-radius:12px;padding:12px}
+.panelTestMark{grid-column:1 / -1;background:#3c2a05;border:1px solid #ffd166;border-radius:12px;padding:10px 12px;color:#ffe4a3;text-align:center;font-weight:700;letter-spacing:1.2px}
 h2{margin:0 0 10px 0;font-size:14px;color:#b7c5e6}
 .kv{display:grid;grid-template-columns:140px 1fr;gap:8px;margin:6px 0}
 .k{color:#b7c5e6;font-size:12px}
@@ -1412,6 +1425,7 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
 </style></head><body>
 
 <div class="wrap">
+  <div class="panelTestMark">ROTOSIS TEST</div>
   <div class="card">
     <h2>CANLI VERÄ°LER</h2>
     <div class="kv"><div class="k">State (Stable/Raw)</div><div class="v mono"><span id="sStb">-</span> / <span id="sRaw">-</span></div></div>
