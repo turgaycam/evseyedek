@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp_ota_ops.h>
@@ -22,15 +23,31 @@ struct OtaContext {
   bool lastUpdateOk = false;
   bool pendingVerify = false;
   bool markedValid = false;
+  bool failureRecorded = false;
   uint32_t bootMs = 0;
   String verifyHeartbeatUrl;
   bool verifyHeartbeatResolved = false;
 } ctx;
 
 HTTPUpdate httpUpdate;
+Preferences otaPrefs;
 
 constexpr uint32_t kVerifyDelayMs = 10 * 1000;   // Yeni firmware'i 10 sn ayakta tuttuktan sonra valid say.
 constexpr uint32_t kVerifyTimeoutMs = 30 * 1000; // 30 sn icinde mark valid olmazsa bootloader rollback yapacak.
+constexpr uint8_t kBackoffStage1Tries = 5;
+constexpr uint8_t kBackoffStage2Tries = 5;
+constexpr uint32_t kBackoffStage1Ms = 5UL * 60UL * 1000UL;      // 5 dk
+constexpr uint32_t kBackoffStage2Ms = 2UL * 60UL * 60UL * 1000UL; // 2 saat
+constexpr uint32_t kBackoffStage3Ms = 3UL * 60UL * 60UL * 1000UL; // 3 saat
+constexpr uint32_t kUptimePersistIntervalMs = 60UL * 1000UL;
+
+struct RetryState {
+  uint32_t uptimeBaseMs = 0;
+  uint32_t nextAllowedMs = 0;
+  uint8_t failCount = 0;
+  uint32_t lastPersistMs = 0;
+  bool prefsReady = false;
+} retry;
 
 struct Manifest {
   String version;
@@ -42,6 +59,89 @@ struct Manifest {
 
 static bool wifiReady() {
   return WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
+}
+
+static uint32_t virtualMillis() {
+  return retry.uptimeBaseMs + millis();
+}
+
+static void persistUptimeNow() {
+  if (!retry.prefsReady) return;
+  otaPrefs.putUInt("uptime_ms", virtualMillis());
+  retry.lastPersistMs = millis();
+}
+
+static void persistUptimeIfNeeded() {
+  if (!retry.prefsReady) return;
+  uint32_t now = millis();
+  if (now - retry.lastPersistMs < kUptimePersistIntervalMs) return;
+  persistUptimeNow();
+}
+
+static void loadRetryState() {
+  if (!otaPrefs.begin("ota_guard", false)) return;
+  retry.prefsReady = true;
+  retry.uptimeBaseMs = otaPrefs.getUInt("uptime_ms", 0);
+  retry.nextAllowedMs = otaPrefs.getUInt("next_ms", 0);
+  retry.failCount = otaPrefs.getUChar("fail_cnt", 0);
+  retry.lastPersistMs = millis();
+
+  uint32_t now = virtualMillis();
+  if (retry.nextAllowedMs != 0 && (int32_t)(now - retry.nextAllowedMs) >= 0) {
+    retry.nextAllowedMs = 0;
+    otaPrefs.putUInt("next_ms", 0);
+  }
+}
+
+static uint32_t computeBackoffMs(uint8_t failCount) {
+  if (failCount <= kBackoffStage1Tries) return kBackoffStage1Ms;
+  if (failCount <= (kBackoffStage1Tries + kBackoffStage2Tries)) return kBackoffStage2Ms;
+  return kBackoffStage3Ms;
+}
+
+static bool backoffActive() {
+  if (!retry.prefsReady) return false;
+  if (retry.nextAllowedMs == 0) return false;
+  return (int32_t)(virtualMillis() - retry.nextAllowedMs) < 0;
+}
+
+static void setBackoffStatus() {
+  if (!backoffActive()) return;
+  uint32_t now = virtualMillis();
+  uint32_t remain = retry.nextAllowedMs - now;
+  uint32_t minutes = (remain + 60000UL - 1UL) / 60000UL;
+  ctx.lastStatus = "backoff";
+  ctx.lastError = String("OTA beklemede, ") + String(minutes) + " dk sonra denenecek";
+}
+
+static void noteFailure(const char* reason) {
+  if (!retry.prefsReady) return;
+  if (retry.failCount < 250) retry.failCount++;
+  uint32_t delay = computeBackoffMs(retry.failCount);
+  retry.nextAllowedMs = virtualMillis() + delay;
+  otaPrefs.putUChar("fail_cnt", retry.failCount);
+  otaPrefs.putUInt("next_ms", retry.nextAllowedMs);
+  persistUptimeNow();
+
+  ctx.lastStatus = "backoff";
+  String msg = "OTA beklemeye alindi, ";
+  msg += String((delay + 60000UL - 1UL) / 60000UL);
+  msg += " dk sonra tekrar denenecek";
+  if (reason && reason[0]) {
+    msg += " (";
+    msg += reason;
+    msg += ")";
+  }
+  ctx.lastError = msg;
+}
+
+static void clearBackoff() {
+  if (!retry.prefsReady) return;
+  retry.failCount = 0;
+  retry.nextAllowedMs = 0;
+  otaPrefs.putUChar("fail_cnt", 0);
+  otaPrefs.putUInt("next_ms", 0);
+  persistUptimeNow();
 }
 
 static void configureClient(WiFiClientSecure& client) {
@@ -316,6 +416,7 @@ static bool markRunningAppValid() {
   if (err == ESP_OK) {
     ctx.markedValid = true;
     ctx.pendingVerify = false;
+    clearBackoff();
     Serial.println("[OTA] Yeni firmware stabil olarak isaretlendi; rollback iptal");
     return true;
   }
@@ -328,6 +429,10 @@ static void handleUpdateCheck() {
     return;
   }
   if (!ctx.checkRequested && ctx.deferUntilMs != 0 && (int32_t)(ctx.deferUntilMs - millis()) > 0) {
+    return;
+  }
+  if (backoffActive()) {
+    setBackoffStatus();
     return;
   }
   if (!wifiReady()) return;
@@ -347,13 +452,18 @@ static void handleUpdateCheck() {
     Serial.printf("[OTA] Yeni surum bulunuyor -> %s\n", m.url.c_str());
     if (!precheckFirmware(m)) {
       ctx.lastUpdateOk = false;
+      noteFailure("precheck_failed");
       return;
     }
     ctx.lastUpdateOk = performUpdate(m.url);
+    if (!ctx.lastUpdateOk) {
+      noteFailure("update_failed");
+    }
   } else {
     ctx.lastStatus = "up_to_date";
     Serial.println("[OTA] Cihaz guncel");
     ctx.lastUpdateOk = true;
+    clearBackoff();
   }
 }
 
@@ -378,7 +488,12 @@ static void handleRollbackGuard() {
     ctx.lastStatus = "healthcheck_timeout_factory";
     ctx.lastError = "30 sn onay yok, factory partitiona donuluyor";
     Serial.println("[OTA] 30 sn icinde onay yok; FACTORY fallback tetikleniyor");
+    if (!ctx.failureRecorded) {
+      noteFailure("healthcheck_timeout");
+      ctx.failureRecorded = true;
+    }
     if (switchBootToFactory()) {
+      persistUptimeNow();
       delay(100);
       ESP.restart();
     }
@@ -412,6 +527,9 @@ void begin(const char* manifestUrl, uint32_t checkIntervalMs, const char* sha1Fi
   ctx.lastRemoteVersion = "-";
   ctx.lastStatus = "boot";
   ctx.lastError = "";
+  ctx.failureRecorded = false;
+
+  loadRetryState();
 
   const esp_partition_t* running = esp_ota_get_running_partition();
   esp_ota_img_states_t state;
@@ -427,6 +545,7 @@ void begin(const char* manifestUrl, uint32_t checkIntervalMs, const char* sha1Fi
 void loop() {
   handleRollbackGuard();
   handleUpdateCheck();
+  persistUptimeIfNeeded();
 }
 
 void triggerCheckNow() {
@@ -466,4 +585,3 @@ uint32_t lastCheckAgeMs() {
 }
 
 }  // namespace OTA_Manager
-
