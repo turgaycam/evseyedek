@@ -915,6 +915,15 @@ body.state-D .stateGlyph{
   word-break:break-word;
 }
 .metaLine.muted{color:#bdd7e2}
+.footerMark{
+  margin-top:16px;
+  padding:10px 0 4px;
+  text-align:center;
+  color:#9dc0ce;
+  font-size:12px;
+  letter-spacing:1.4px;
+  text-transform:uppercase;
+}
 @keyframes pulseIcon{
   0%,100%{transform:translateY(1px) scale(1)}
   50%{transform:translateY(1px) scale(1.08)}
@@ -1477,6 +1486,7 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
 
   </div>
 </div>
+<div class="footerMark">turgay</div>
 
 
 <script>
