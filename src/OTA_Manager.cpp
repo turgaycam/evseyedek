@@ -75,8 +75,17 @@ static int compareVersionTokens(const String& a, const String& b) {
 }
 
 static bool parseManifest(const String& payload, Manifest& out) {
+  String cleanPayload = payload;
+  cleanPayload.trim();
+  if (cleanPayload.length() >= 3 &&
+      (uint8_t)cleanPayload[0] == 0xEF &&
+      (uint8_t)cleanPayload[1] == 0xBB &&
+      (uint8_t)cleanPayload[2] == 0xBF) {
+    cleanPayload.remove(0, 3);
+  }
+
   StaticJsonDocument<256> doc;
-  auto err = deserializeJson(doc, payload);
+  auto err = deserializeJson(doc, cleanPayload);
   if (err) {
     Serial.printf("[OTA] version.json parse hatasi: %s\n", err.c_str());
     return false;

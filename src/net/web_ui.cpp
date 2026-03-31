@@ -958,7 +958,7 @@ body.state-D .stateGlyph{
 <meta name="apple-mobile-web-app-title" content="RotosisEVSE">
 </head><body class="state-A">
 <div class="app">
-  <div class="testMark">ROTOSIS TEST</div>
+  <div class="testMark">MUHAMMED TEST</div>
   <div class="top">
     <div>
       <div class="brand">RotosisEVSE</div>
@@ -1448,7 +1448,7 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
 </style></head><body>
 
 <div class="wrap">
-  <div class="panelTestMark">ROTOSIS TEST</div>
+  <div class="panelTestMark">MUHAMMED TEST</div>
   <div class="card">
     <h2>CANLI VERÄ°LER</h2>
     <div class="kv"><div class="k">State (Stable/Raw)</div><div class="v mono"><span id="sStb">-</span> / <span id="sRaw">-</span></div></div>
