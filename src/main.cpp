@@ -268,6 +268,16 @@ void loop()
   // 4) ekran ve LED guncellemesi
   // 5) PWM ve role kararinin uygulanmasi
 
+#if defined(OTA_BAD_TEST)
+  // OTA rollback test: yeni firmware birkac saniye sonra yeniden baslar.
+  static uint32_t badStartMs = millis();
+  if (millis() - badStartMs > 5000) {
+    Serial.println("[TEST] OTA_BAD_TEST restart");
+    delay(100);
+    esp_restart();
+  }
+#endif
+
   // Web sunucu dongusu
   web_loop();
   OTA_Manager::loop();
