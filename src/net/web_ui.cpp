@@ -887,6 +887,10 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
 .hero{background:linear-gradient(180deg, rgba(0,200,150,.10), rgba(0,0,0,0));border:1px solid #20304a;border-radius:12px;padding:10px;margin-bottom:10px}
 .heroTop{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
 .badge{font-family:monospace;font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid rgba(0,200,150,.45);background:rgba(0,200,150,.12);color:#00ffaa}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+@media(max-width:680px){.grid3,.grid2{grid-template-columns:1fr}}
+.hintBox{padding:10px 12px;border-radius:12px;background:rgba(0,200,150,.08);border:1px solid rgba(0,200,150,.18);color:#bde9dd;font-size:12px;line-height:1.55}
 
 </style></head><body>
 
@@ -898,21 +902,44 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
     <div class="kv"><div class="k">ADC High / Low</div><div class="v mono"><span id="aH">-</span> / <span id="aL">-</span></div></div>
 
     <div class="sep"></div>
-    <h2>Zamanlama ve HÄ±z AyarlarÄ±</h2>
-    <div class="kv"><div class="k">Loop DÃ¶ngÃ¼sÃ¼ (ms)</div><div class="v"><input id="lInt" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">RÃ¶le AÃ§ma (ms)</div><div class="v"><input id="onD" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">RÃ¶le BÄ±rakma (ms)</div><div class="v"><input id="offD" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">Stable Count</div><div class="v"><input id="stb" onfocus="p()" onblur="r()"></div></div>
+    <h2>ZAMANLAMA</h2>
+    <div class="kv"><div class="k">Loop dongusu (ms)</div><div class="v"><input id="lInt" onfocus="p()" onblur="r()"></div></div>
+    <div class="kv"><div class="k">Role acma (ms)</div><div class="v"><input id="onD" onfocus="p()" onblur="r()"></div></div>
+    <div class="kv"><div class="k">Role birakma (ms)</div><div class="v"><input id="offD" onfocus="p()" onblur="r()"></div></div>
+    <div class="kv"><div class="k">Stable count</div><div class="v"><input id="stb" onfocus="p()" onblur="r()"></div></div>
 
     <div class="sep"></div>
-    <h2>EÅŸikler / Kalibrasyon</h2>
+    <h2>CP KALIBRASYON</h2>
     <div class="kv"><div class="k">Divider</div><div class="v"><input id="div" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">TH_B / TH_C</div><div class="v" style="display:flex;gap:5px"><input id="thb" onfocus="p()" onblur="r()"> <input id="thc" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">TH_D / TH_E</div><div class="v" style="display:flex;gap:5px"><input id="thd" onfocus="p()" onblur="r()"> <input id="the" onfocus="p()" onblur="r()"></div></div>
+    <div class="kv"><div class="k">TH_B / TH_C</div><div class="v grid2"><input id="thb" onfocus="p()" onblur="r()"><input id="thc" onfocus="p()" onblur="r()"></div></div>
+    <div class="kv"><div class="k">TH_D / TH_E</div><div class="v grid2"><input id="thd" onfocus="p()" onblur="r()"><input id="the" onfocus="p()" onblur="r()"></div></div>
 
-    <div class="btns" style="margin-top:10px">
+    <div class="sep"></div>
+    <h2>AKIM KALIBRASYONU</h2>
+    <div class="hintBox">
+      0-10A araliginda varsayilan kalibrasyon 12.0. 10-30A araliginda varsayilan ek offset 1.0A.
+      Buradan hem faz bazli kalibrasyon katsayilarini hem de orta aralik ofsetini degistirebilirsin.
+    </div>
+    <div class="kv"><div class="k">Ical A / B / C</div><div class="v grid3"><input id="icalA" onfocus="p()" onblur="r()"><input id="icalB" onfocus="p()" onblur="r()"><input id="icalC" onfocus="p()" onblur="r()"></div></div>
+    <div class="kv"><div class="k">Offset A / B / C</div><div class="v grid3"><input id="ioffA" onfocus="p()" onblur="r()"><input id="ioffB" onfocus="p()" onblur="r()"><input id="ioffC" onfocus="p()" onblur="r()"></div></div>
+    <div class="kv"><div class="k">0-10A profil</div><div class="v grid2"><input id="rngLowMax" onfocus="p()" onblur="r()" placeholder="max A"><input id="rngLowOff" onfocus="p()" onblur="r()" placeholder="offset A"></div></div>
+    <div class="kv"><div class="k">10-30A profil</div><div class="v grid2"><input id="rngMidMax" onfocus="p()" onblur="r()" placeholder="max A"><input id="rngMidOff" onfocus="p()" onblur="r()" placeholder="offset A"></div></div>
+    <div class="small">Varsayilan tavsiye: `rngLowMax=10`, `rngLowOff=0`, `rngMidMax=30`, `rngMidOff=1`.</div>
+
+    <div class="sep"></div>
+    <h2>PENS AMPERMETRE YARDIMI</h2>
+    <div class="kv"><div class="k">Canli A / B / C</div><div class="v mono"><span id="liveIa">-</span> / <span id="liveIb">-</span> / <span id="liveIc">-</span> A</div></div>
+    <div class="kv"><div class="k">Canli ortalama</div><div class="v mono"><span id="liveIAvg">-</span> A</div></div>
+    <div class="kv"><div class="k">Pens 0-10A A / B / C</div><div class="v grid3"><input id="clampLowA" onfocus="p()" onblur="r()" placeholder="A"><input id="clampLowB" onfocus="p()" onblur="r()" placeholder="B"><input id="clampLowC" onfocus="p()" onblur="r()" placeholder="C"></div></div>
+    <div class="btns"><button onclick="fillClampLow()">Pens A/B/C ile Ical doldur</button></div>
+    <div class="kv"><div class="k">Pens 10-30A A / B / C</div><div class="v grid3"><input id="clampMidA" onfocus="p()" onblur="r()" placeholder="A"><input id="clampMidB" onfocus="p()" onblur="r()" placeholder="B"><input id="clampMidC" onfocus="p()" onblur="r()" placeholder="C"></div></div>
+    <div class="btns"><button onclick="fillClampMid()">Pens A/B/C ile offset doldur</button></div>
+    <div class="small">Ilk buton her faz icin girilen pens degerine gore `Ical A/B/C` alanlarini ayarlar. Ikinci buton her fazin pens-ekran farkina gore `Offset A/B/C` alanlarini doldurur.</div>
+
+    <div class="btns" style="margin-top:12px">
       <button class="primary" onclick="applyCal()">UYGULA</button>
-      <button onclick="pull(true)">YENÄ°LE</button>
+      <button onclick="pull(true)">YENILE</button>
+      <button onclick="window.location='/'">KULLANICI EKRANI</button>
     </div>
   </div>
 
@@ -975,6 +1002,14 @@ const keys = ["lInt","onD","offD","stable","div","thb","thc","thd","the"];
 function p(){ paused=true; clearTimeout(t); }
 function r(){ t=setTimeout(()=>{paused=false;},3000); }
 function send(path){ fetch(path).then(_=>pull(false)); }
+function num(v, fallback = 0){
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+function setInput(id, value, force){
+  const el = document.getElementById(id);
+  if(el && (document.activeElement !== el || force)) el.value = value;
+}
 
 function fmtTime(sec){
   const m = Math.floor(sec/60);
@@ -984,9 +1019,44 @@ function fmtTime(sec){
   return mm + ":" + ss;
 }
 
+function fillClampLow(){
+  let changed = 0;
+  ['A','B','C'].forEach(ph => {
+    const ref = num(document.getElementById('clampLow' + ph).value, 0);
+    const live = num(document.getElementById('liveI' + ph).textContent, 0);
+    const currentCal = num(document.getElementById('ical' + ph).value, 12);
+    if(ref > 0 && live > 0.2){
+      document.getElementById('ical' + ph).value = (currentCal * (ref / live)).toFixed(2);
+      changed++;
+    }
+  });
+  if(!changed){
+    alert('Pens A/B/C referanslarindan en az birini gir ve canli akim gelsin.');
+    return;
+  }
+  alert('Ical A/B/C alanlari pens faz degerlerine gore dolduruldu.');
+}
+
+function fillClampMid(){
+  let changed = 0;
+  ['A','B','C'].forEach(ph => {
+    const ref = num(document.getElementById('clampMid' + ph).value, 0);
+    const live = num(document.getElementById('liveI' + ph).textContent, 0);
+    if(ref > 0 && live > 0){
+      document.getElementById('ioff' + ph).value = (ref - live).toFixed(2);
+      changed++;
+    }
+  });
+  if(!changed){
+    alert('Pens A/B/C referanslarindan en az birini gir ve canli akim gelsin.');
+    return;
+  }
+  alert('Offset A/B/C alanlari pens faz degerlerine gore dolduruldu.');
+}
+
 function pull(force=false){
   if(paused && !force) return;
-  fetch('/status').then(r=>r.json()).then(d=>{
+  fetch('/status', {cache:'no-store'}).then(r=>r.json()).then(d=>{
     document.getElementById('sStb').textContent = d.state;
     document.getElementById('sRaw').textContent = d.stateRaw;
     document.getElementById('cH').textContent = d.cpHigh.toFixed(2)+"V";
@@ -1010,6 +1080,15 @@ function pull(force=false){
     if(d.rstHist !== undefined) document.getElementById('rstHist').textContent = d.rstHist;
     if(d.rstLastMode !== undefined) document.getElementById('rstLastMode').textContent = d.rstLastMode;
     if(d.rstLastSec !== undefined) document.getElementById('rstLastSec').textContent = d.rstLastSec;
+    const liveA = num(d.ia);
+    const liveB = num(d.ib);
+    const liveC = num(d.ic);
+    document.getElementById('liveIa').textContent = liveA.toFixed(2);
+    document.getElementById('liveIb').textContent = liveB.toFixed(2);
+    document.getElementById('liveIc').textContent = liveC.toFixed(2);
+    const liveVals = [liveA, liveB, liveC].filter(v => v > 0.1);
+    const liveAvg = liveVals.length ? (liveVals.reduce((sum, v) => sum + v, 0) / liveVals.length) : 0;
+    document.getElementById('liveIAvg').textContent = liveAvg.toFixed(2);
 
     // Ust rozetler
     const st = (d.state || "-");
@@ -1030,12 +1109,32 @@ function pull(force=false){
       let el = document.getElementById(id);
       if(el && (document.activeElement !== el || force)) el.value = d[keys[i]];
     });
+    setInput('icalA', d.icalA, force);
+    setInput('icalB', d.icalB, force);
+    setInput('icalC', d.icalC, force);
+    setInput('ioffA', d.ioffA, force);
+    setInput('ioffB', d.ioffB, force);
+    setInput('ioffC', d.ioffC, force);
+    setInput('rngLowMax', d.rngLowMax, force);
+    setInput('rngMidMax', d.rngMidMax, force);
+    setInput('rngLowOff', d.rngLowOff, force);
+    setInput('rngMidOff', d.rngMidOff, force);
   });
 }
 
 function applyCal(){
   const q = new URLSearchParams();
   inps.forEach((id, i) => q.append(keys[i]==="stable"?"s":keys[i], document.getElementById(id).value));
+  q.append('icalA', document.getElementById('icalA').value);
+  q.append('icalB', document.getElementById('icalB').value);
+  q.append('icalC', document.getElementById('icalC').value);
+  q.append('ioffA', document.getElementById('ioffA').value);
+  q.append('ioffB', document.getElementById('ioffB').value);
+  q.append('ioffC', document.getElementById('ioffC').value);
+  q.append('rngLowMax', document.getElementById('rngLowMax').value);
+  q.append('rngMidMax', document.getElementById('rngMidMax').value);
+  q.append('rngLowOff', document.getElementById('rngLowOff').value);
+  q.append('rngMidOff', document.getElementById('rngMidOff').value);
   if(document.activeElement) document.activeElement.blur();
   fetch('/calib_apply?'+q.toString()).then(_=>{alert("Tamam"); paused=false; pull(true);});
 }
@@ -1139,6 +1238,11 @@ static void handleStatus() {
   float adcHigh = safeFinite(m.adcHigh);
   float adcLow = safeFinite(m.adcLow);
   const char* relayLabel = relaySet ? "SET" : "RESET";
+  float calA = 0.0f, calB = 0.0f, calC = 0.0f;
+  float offA = 0.0f, offB = 0.0f, offC = 0.0f;
+  float rngLowMax = 0.0f, rngMidMax = 0.0f, rngLowOff = 0.0f, rngMidOff = 0.0f;
+  current_sensor_get_calibration(&calA, &calB, &calC, &offA, &offB, &offC);
+  current_sensor_get_range_profile(&rngLowMax, &rngMidMax, &rngLowOff, &rngMidOff);
   float iMax = ia;
   if (ib > iMax) iMax = ib;
   if (ic > iMax) iMax = ic;
@@ -1171,7 +1275,7 @@ static void handleStatus() {
     alarmTxt = "Wi-Fi baglantisi yok";
   }
 
-  char json[1440];
+  char json[1960];
   snprintf(
     json, sizeof(json),
     "{\"lInt\":%d,\"onD\":%lu,\"offD\":%lu,\"stable\":%d,"
@@ -1180,6 +1284,8 @@ static void handleStatus() {
     "\"pW\":%.1f,\"eKWh\":%.3f,\"tSec\":%lu,\"phase\":%d,\"rLbl\":\"%s\","
     "\"wifiSsid\":\"%s\",\"wifiLoc\":\"%s\",\"ip\":\"%s\",\"host\":\"%s\","
     "\"state\":\"%s\",\"div\":%.3f,\"thb\":%.2f,\"thc\":%.2f,\"thd\":%.2f,\"the\":%.2f,"
+    "\"icalA\":%.2f,\"icalB\":%.2f,\"icalC\":%.2f,\"ioffA\":%.2f,\"ioffB\":%.2f,\"ioffC\":%.2f,"
+    "\"rngLowMax\":%.2f,\"rngMidMax\":%.2f,\"rngLowOff\":%.2f,\"rngMidOff\":%.2f,"
     "\"modeId\":%d,\"mode\":\"%s\",\"limitA\":%.1f,\"staOk\":%d,"
     "\"alarmLv\":%d,\"alarmTxt\":\"%s\","
     "\"sLive\":%d,\"sLiveStart\":%lu,\"sLiveSec\":%lu,\"sLiveKWh\":%.3f,"
@@ -1202,6 +1308,8 @@ static void handleStatus() {
     m.stateStable.c_str(),
     CP_DIVIDER_RATIO,
     TH_B_MIN, TH_C_MIN, TH_D_MIN, TH_E_MIN,
+    calA, calB, calC, offA, offB, offC,
+    rngLowMax, rngMidMax, rngLowOff, rngMidOff,
     g_chargeMode,
     chargeModeLabel(g_chargeMode),
     safeFinite(g_currentLimitA),
@@ -1310,6 +1418,11 @@ static void handleDataReset() {
 // Web admin panelinden gelen CP / relay / timing ayarlari burada uygulanir.
 static void handleCalibApply() {
   if (!requireAdminAuth()) return;
+  float calA = 0.0f, calB = 0.0f, calC = 0.0f;
+  float offA = 0.0f, offB = 0.0f, offC = 0.0f;
+  float rngLowMax = 0.0f, rngMidMax = 0.0f, rngLowOff = 0.0f, rngMidOff = 0.0f;
+  current_sensor_get_calibration(&calA, &calB, &calC, &offA, &offB, &offC);
+  current_sensor_get_range_profile(&rngLowMax, &rngMidMax, &rngLowOff, &rngMidOff);
   if (server.hasArg("lInt")) {
     loopIntervalMs = clampIntArg(server.arg("lInt"), 20, 2000);
   }
@@ -1337,6 +1450,38 @@ static void handleCalibApply() {
   if (server.hasArg("the")) {
     TH_E_MIN = clampFloatArg(server.arg("the"), 0.0f, 15.0f, TH_E_MIN);
   }
+  if (server.hasArg("icalA")) {
+    calA = clampFloatArg(server.arg("icalA"), 1.0f, 80.0f, calA);
+  }
+  if (server.hasArg("icalB")) {
+    calB = clampFloatArg(server.arg("icalB"), 1.0f, 80.0f, calB);
+  }
+  if (server.hasArg("icalC")) {
+    calC = clampFloatArg(server.arg("icalC"), 1.0f, 80.0f, calC);
+  }
+  if (server.hasArg("ioffA")) {
+    offA = clampFloatArg(server.arg("ioffA"), -10.0f, 10.0f, offA);
+  }
+  if (server.hasArg("ioffB")) {
+    offB = clampFloatArg(server.arg("ioffB"), -10.0f, 10.0f, offB);
+  }
+  if (server.hasArg("ioffC")) {
+    offC = clampFloatArg(server.arg("ioffC"), -10.0f, 10.0f, offC);
+  }
+  if (server.hasArg("rngLowMax")) {
+    rngLowMax = clampFloatArg(server.arg("rngLowMax"), 1.0f, 80.0f, rngLowMax);
+  }
+  if (server.hasArg("rngMidMax")) {
+    rngMidMax = clampFloatArg(server.arg("rngMidMax"), rngLowMax, 80.0f, rngMidMax);
+  }
+  if (server.hasArg("rngLowOff")) {
+    rngLowOff = clampFloatArg(server.arg("rngLowOff"), -10.0f, 10.0f, rngLowOff);
+  }
+  if (server.hasArg("rngMidOff")) {
+    rngMidOff = clampFloatArg(server.arg("rngMidOff"), -10.0f, 10.0f, rngMidOff);
+  }
+  current_sensor_set_calibration(calA, calB, calC, offA, offB, offC);
+  current_sensor_set_range_profile(rngLowMax, rngMidMax, rngLowOff, rngMidOff);
   server.send(200, "text/plain", "OK");
 }
 
