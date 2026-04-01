@@ -16,10 +16,16 @@ static bool s_calPrefsReady = false;
 static constexpr float kDefaultCalA = 12.0f; // fine-tune: 23.17 / 23.7
 static constexpr float kDefaultCalB = 12.0f; // fine-tune: 25.17 / 25.6
 static constexpr float kDefaultCalC = 12.0f; // fine-tune: 24.28 / 24.7
+static constexpr float kDefaultLowRangeMaxA = 10.0f;
+static constexpr float kDefaultMidRangeMaxA = 30.0f;
+static constexpr float kDefaultLowRangeOffsetA = 0.0f;
+static constexpr float kDefaultMidRangeOffsetA = 1.0f;
 static constexpr float kMinIcal = 1.0f;
 static constexpr float kMaxIcal = 80.0f;
 static constexpr float kMinOff = -10.0f;
 static constexpr float kMaxOff = 10.0f;
+static constexpr float kMinRangeMaxA = 1.0f;
+static constexpr float kMaxRangeMaxA = 80.0f;
 static constexpr uint32_t kCalMagic = 0x43414C31; // "CAL1"
 static constexpr uint16_t kCalVersion = 2;
 
@@ -32,6 +38,13 @@ static float s_offC = 0.0f;
 static bool s_enA = true;
 static bool s_enB = true;
 static bool s_enC = true;
+static float s_lowRangeMaxA = kDefaultLowRangeMaxA;
+static float s_midRangeMaxA = kDefaultMidRangeMaxA;
+static float s_lowRangeOffsetA = kDefaultLowRangeOffsetA;
+static float s_midRangeOffsetA = kDefaultMidRangeOffsetA;
+static float last_filtered_a = 0.0f;
+static float last_filtered_b = 0.0f;
+static float last_filtered_c = 0.0f;
 static float last_irms_a = 0.0f;
 static float last_irms_b = 0.0f;
 static float last_irms_c = 0.0f;
@@ -80,6 +93,14 @@ static void save_calibration_nvs() {
     s_calPrefs.putBytes("iCal", &data, sizeof(data));
 }
 
+static void save_range_profile_nvs() {
+    if (!s_calPrefsReady) return;
+    s_calPrefs.putFloat("rngLowMax", s_lowRangeMaxA);
+    s_calPrefs.putFloat("rngMidMax", s_midRangeMaxA);
+    s_calPrefs.putFloat("rngLowOff", s_lowRangeOffsetA);
+    s_calPrefs.putFloat("rngMidOff", s_midRangeOffsetA);
+}
+
 static bool valid_cal(const CalStore& d) {
     return (d.magic == kCalMagic) &&
            (d.version == kCalVersion) &&
@@ -114,26 +135,57 @@ static void load_calibration_nvs() {
     }
 }
 
+static void load_range_profile_nvs() {
+    if (!s_calPrefsReady) return;
+
+    float lowMax = s_calPrefs.getFloat("rngLowMax", kDefaultLowRangeMaxA);
+    float midMax = s_calPrefs.getFloat("rngMidMax", kDefaultMidRangeMaxA);
+    float lowOff = s_calPrefs.getFloat("rngLowOff", kDefaultLowRangeOffsetA);
+    float midOff = s_calPrefs.getFloat("rngMidOff", kDefaultMidRangeOffsetA);
+
+    if (!isfinite(lowMax) || !isfinite(midMax) ||
+        !isfinite(lowOff) || !isfinite(midOff)) {
+        save_range_profile_nvs();
+        return;
+    }
+
+    s_lowRangeMaxA = constrain(lowMax, kMinRangeMaxA, kMaxRangeMaxA);
+    s_midRangeMaxA = constrain(midMax, s_lowRangeMaxA, kMaxRangeMaxA);
+    s_lowRangeOffsetA = constrain(lowOff, kMinOff, kMaxOff);
+    s_midRangeOffsetA = constrain(midOff, kMinOff, kMaxOff);
+}
+
+static float range_profile_offset(float currentA) {
+    if (currentA <= 0.0f) return 0.0f;
+    if (currentA <= s_lowRangeMaxA) return s_lowRangeOffsetA;
+    if (currentA <= s_midRangeMaxA) return s_midRangeOffsetA;
+    return 0.0f;
+}
+
 // Raw Irms degerini gurultu tabani, hysteresis ve EMA ile daha okunabilir hale getirir.
 static float apply_phase_filter(float raw, float* noise_floor, bool* phase_active, float last_value) {
     // Dusuk seviyede yavas noise-floor kalibrasyonu.
-    if (raw < 2.0f) {
-        *noise_floor = (*noise_floor * 0.98f) + (raw * 0.02f);
+    if (raw < 2.2f) {
+        *noise_floor = (*noise_floor * 0.985f) + (raw * 0.015f);
     }
 
     float corrected = raw - (*noise_floor + 0.15f);
     if (corrected < 0.0f) corrected = 0.0f;
 
     // Histerezis: kucuk dalgalanmalarda akimi "var" gostermesin.
-    const float onTh = 0.90f;
-    const float offTh = 0.35f;
+    const float onTh = 1.00f;
+    const float offTh = 0.45f;
     if (!(*phase_active) && corrected >= onTh) *phase_active = true;
     if ((*phase_active) && corrected <= offTh) *phase_active = false;
     if (!(*phase_active)) corrected = 0.0f;
 
-    // Stabil gorunum icin EMA.
-    const float alpha = 0.30f;
-    return (last_value * (1.0f - alpha)) + (corrected * alpha);
+    // Stabil gorunum icin EMA. Dususte daha yavas davranarak ekrani sakin tut.
+    const float alphaUp = 0.18f;
+    const float alphaDown = 0.09f;
+    float alpha = (corrected >= last_value) ? alphaUp : alphaDown;
+    float filtered = last_value + ((corrected - last_value) * alpha);
+    if (filtered < 0.08f) filtered = 0.0f;
+    return filtered;
 }
 
 void current_sensor_init() {
@@ -147,6 +199,7 @@ void current_sensor_init() {
 
     s_calPrefsReady = s_calPrefs.begin("evsecal", false);
     load_calibration_nvs();
+    load_range_profile_nvs();
 
     // Her fazin kalibrasyon katsayisi burada ayarlanir.
     apply_calibration();
@@ -163,36 +216,45 @@ void current_sensor_loop() {
     static uint8_t phase_index = 0;
     const uint32_t now = millis();
 
-    if (now - last_read < 250) return;
+    if (now - last_read < 280) return;
     last_read = now;
 
     const int sampleCount = 500;
     if (phase_index == 0) {
         if (s_enA) {
             float raw = emonA.calcIrms(sampleCount);
-            float filtered = apply_phase_filter(raw, &noise_floor_a, &phase_active_a, last_irms_a);
-            last_irms_a = filtered + s_offA;
+            float filtered = apply_phase_filter(raw, &noise_floor_a, &phase_active_a, last_filtered_a);
+            last_filtered_a = filtered;
+            last_irms_a = filtered + range_profile_offset(filtered) + s_offA;
             if (last_irms_a < 0.0f) last_irms_a = 0.0f;
         } else {
+            last_filtered_a = 0.0f;
             last_irms_a = 0.0f;
+            phase_active_a = false;
         }
     } else if (phase_index == 1) {
         if (s_enB) {
             float raw = emonB.calcIrms(sampleCount);
-            float filtered = apply_phase_filter(raw, &noise_floor_b, &phase_active_b, last_irms_b);
-            last_irms_b = filtered + s_offB;
+            float filtered = apply_phase_filter(raw, &noise_floor_b, &phase_active_b, last_filtered_b);
+            last_filtered_b = filtered;
+            last_irms_b = filtered + range_profile_offset(filtered) + s_offB;
             if (last_irms_b < 0.0f) last_irms_b = 0.0f;
         } else {
+            last_filtered_b = 0.0f;
             last_irms_b = 0.0f;
+            phase_active_b = false;
         }
     } else {
         if (s_enC) {
             float raw = emonC.calcIrms(sampleCount);
-            float filtered = apply_phase_filter(raw, &noise_floor_c, &phase_active_c, last_irms_c);
-            last_irms_c = filtered + s_offC;
+            float filtered = apply_phase_filter(raw, &noise_floor_c, &phase_active_c, last_filtered_c);
+            last_filtered_c = filtered;
+            last_irms_c = filtered + range_profile_offset(filtered) + s_offC;
             if (last_irms_c < 0.0f) last_irms_c = 0.0f;
         } else {
+            last_filtered_c = 0.0f;
             last_irms_c = 0.0f;
+            phase_active_c = false;
         }
     }
 
@@ -224,6 +286,27 @@ void current_sensor_get_calibration(float* calA, float* calB, float* calC,
     if (offA) *offA = s_offA;
     if (offB) *offB = s_offB;
     if (offC) *offC = s_offC;
+}
+
+void current_sensor_set_range_profile(float lowMaxA,
+                                      float midMaxA,
+                                      float lowOffsetA,
+                                      float midOffsetA) {
+    s_lowRangeMaxA = constrain(lowMaxA, kMinRangeMaxA, kMaxRangeMaxA);
+    s_midRangeMaxA = constrain(midMaxA, s_lowRangeMaxA, kMaxRangeMaxA);
+    s_lowRangeOffsetA = constrain(lowOffsetA, kMinOff, kMaxOff);
+    s_midRangeOffsetA = constrain(midOffsetA, kMinOff, kMaxOff);
+    save_range_profile_nvs();
+}
+
+void current_sensor_get_range_profile(float* lowMaxA,
+                                      float* midMaxA,
+                                      float* lowOffsetA,
+                                      float* midOffsetA) {
+    if (lowMaxA) *lowMaxA = s_lowRangeMaxA;
+    if (midMaxA) *midMaxA = s_midRangeMaxA;
+    if (lowOffsetA) *lowOffsetA = s_lowRangeOffsetA;
+    if (midOffsetA) *midOffsetA = s_midRangeOffsetA;
 }
 
 void current_sensor_set_enabled(bool enA, bool enB, bool enC) {

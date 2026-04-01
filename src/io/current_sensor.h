@@ -16,6 +16,14 @@ void current_sensor_set_calibration(float calA, float calB, float calC,
                                     float offA, float offB, float offC);
 void current_sensor_get_calibration(float* calA, float* calB, float* calC,
                                     float* offA, float* offB, float* offC);
+void current_sensor_set_range_profile(float lowMaxA,
+                                      float midMaxA,
+                                      float lowOffsetA,
+                                      float midOffsetA);
+void current_sensor_get_range_profile(float* lowMaxA,
+                                      float* midMaxA,
+                                      float* lowOffsetA,
+                                      float* midOffsetA);
 void current_sensor_set_enabled(bool enA, bool enB, bool enC);
 void current_sensor_get_enabled(bool* enA, bool* enB, bool* enC);
 
