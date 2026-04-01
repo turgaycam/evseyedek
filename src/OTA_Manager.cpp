@@ -9,6 +9,8 @@
 #include <esp_ota_ops.h>
 #include <mbedtls/sha256.h>
 
+#include "net/web_ui.h"
+
 namespace {
 struct OtaContext {
   String manifestUrl;
@@ -600,6 +602,14 @@ static void handleRollbackGuard() {
   if (!ctx.pendingVerify || ctx.markedValid) return;
   uint32_t now = millis();
   if (now - ctx.bootMs < kVerifyDelayMs) return; // biraz bekle
+
+  // Manuel /update akisinda custom trial state yoktur. Bu durumda cihazin
+  // kendi web arayuzunu basariyla servis edebilmesi "saglikli boot" icin yeterli.
+  if (!ctx.customTrialPending && web_ready_for_ota_validation()) {
+    Serial.println("[OTA] Local web healthcheck OK; firmware valid olarak isaretleniyor");
+    markRunningAppValid();
+    return;
+  }
 
   if (!ctx.verifyHeartbeatResolved) {
     Manifest m;
