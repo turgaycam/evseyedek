@@ -3,14 +3,15 @@
 #include <WiFiMulti.h>
 
 #include <WebServer.h>
-#include <ElegantOTA.h>
-#include <ArduinoOTA.h>
+#include <Update.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
+#include <esp_ota_ops.h>
 #include <math.h>
 
 #include "app_config.h"
 #include "app_pins.h"
+#include "OTA_Manager.h"
 #include "pilot/pilot.h"
 #include "io/relay.h"
 
@@ -145,8 +146,6 @@ static void pulseGpio(uint8_t pin) {
 static const char* kAdminUser = EVSE_ADMIN_USER;
 static const char* kAdminPassword = EVSE_ADMIN_PASSWORD;
 static const char* kHostName = EVSE_HOSTNAME;
-static const char* kOtaHostname = EVSE_OTA_HOSTNAME;
-static const char* kOtaPassword = EVSE_OTA_PASSWORD;
 
 struct KnownWifi {
   const char* location;
@@ -165,6 +164,9 @@ static const KnownWifi kKnownWifis[] = {
 WiFiMulti wifiMulti;
 static WebServer server(80);
 static bool wifiEventsReady = false;
+static char s_jsonBuf[4096];
+static bool s_serverStarted = false;
+static uint32_t s_lastWebLoopMs = 0;
 static uint32_t s_resetTotalCount = 0;
 static uint32_t s_resetNowCount = 0;
 static uint32_t s_resetHistoryCount = 0;
@@ -173,8 +175,28 @@ static uint8_t s_resetLastModeId = 0;
 static Preferences s_resetPrefs;
 static bool s_resetPrefsReady = false;
 
+struct ManualOtaState {
+  bool active = false;
+  bool updateBegun = false;
+  bool success = false;
+  String uploadedName;
+  String lastError;
+};
+
+static ManualOtaState s_manualOta;
+static bool s_manualOtaRebootPending = false;
+static uint32_t s_manualOtaRebootAtMs = 0;
+
 static bool hasText(const char* value) {
   return value != nullptr && value[0] != '\0';
+}
+
+static void resetManualOtaState() {
+  s_manualOta.active = false;
+  s_manualOta.updateBegun = false;
+  s_manualOta.success = false;
+  s_manualOta.uploadedName = "";
+  s_manualOta.lastError = "";
 }
 
 static void refreshMdns() {
@@ -196,7 +218,6 @@ static void refreshMdns() {
       return;
     }
     MDNS.addService("http", "tcp", 80);
-    MDNS.addService("arduino", "tcp", 3232);
     mdnsStarted = true;
     Serial.print("[mDNS] Ready: http://");
     Serial.print(kHostName);
@@ -205,36 +226,7 @@ static void refreshMdns() {
 }
 
 static void setupArduinoOta() {
-  ArduinoOTA.setHostname(kOtaHostname);
-  if (hasText(kOtaPassword)) {
-    ArduinoOTA.setPassword(kOtaPassword);
-  }
-
-  ArduinoOTA.onStart([]() {
-    Serial.println("[OTA] Start");
-  });
-
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\n[OTA] End");
-  });
-
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    static uint32_t lastPct = 101;
-    uint32_t pct = (total > 0) ? ((progress * 100U) / total) : 0U;
-    if (pct != lastPct && (pct % 10U == 0U || pct == 100U)) {
-      Serial.printf("[OTA] Progress: %u%%\n", (unsigned)pct);
-      lastPct = pct;
-    }
-  });
-
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("[OTA] Error[%u]\n", (unsigned)error);
-  });
-
-  ArduinoOTA.begin();
-  Serial.println("[OTA] Ready (port 3232)");
-  Serial.print("[OTA] Hostname: ");
-  Serial.println(kOtaHostname);
+  Serial.println("[OTA] ArduinoOTA ve generic web OTA devre disi; guvenli yukleme /update uzerinden yapilir");
 }
 
 // Web API'de gelen tamsayi parametreleri guvenli aralikta tutar.
@@ -988,6 +980,22 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
     <div class="kv"><div class="k">Anlik / Gecmis</div><div class="v mono"><span id="rstNow">0</span> / <span id="rstHist">0</span></div></div>
     <div class="kv"><div class="k">Son Islem</div><div class="v mono"><span id="rstLastMode">YOK</span> @ <span id="rstLastSec">0</span>s</div></div>
 
+    <div class="sep"></div>
+    <h2>OTA Teshis</h2>
+    <div class="kv"><div class="k">FW / Remote</div><div class="v mono"><span id="otaCurVer">-</span> / <span id="otaRemoteVer">-</span></div></div>
+    <div class="kv"><div class="k">Calisan bolum</div><div class="v mono"><span id="otaPart">-</span></div></div>
+    <div class="kv"><div class="k">Image state</div><div class="v mono"><span id="otaImgState">-</span></div></div>
+    <div class="kv"><div class="k">Durum</div><div class="v mono"><span id="otaStatus">-</span></div></div>
+    <div class="kv"><div class="k">Son kontrol</div><div class="v mono"><span id="otaAge">-</span></div></div>
+    <div class="kv"><div class="k">Hata</div><div class="v mono"><span id="otaError">Hata yok</span></div></div>
+    <div class="btns" style="margin-top:10px">
+      <button class="primary" onclick="window.location='/update'">BIN YUKLE</button>
+      <button class="primary" onclick="runOtaCheckAdmin()">OTA KONTROL ET</button>
+      <button onclick="runBootPrev()">ONCEKI OTA'YA DON</button>
+      <button class="danger" onclick="runBootFactory()">FACTORY'E DON</button>
+    </div>
+    <div class="small">Not: GitHub kontrolu saatte bir otomatik calisir. `Factory'e don` USB ile yukledigin sabit kurtarma surumunu acar.</div>
+
 
 
   </div>
@@ -1017,6 +1025,43 @@ function fmtTime(sec){
   const mm = String(m).padStart(2, "0");
   const ss = String(s).padStart(2, "0");
   return mm + ":" + ss;
+}
+
+function fmtOtaAge(ms){
+  const sec = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  if(sec === 0) return "hemen simdi";
+  if(sec < 60) return sec + " sn once";
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  return min + " dk " + rem + " sn once";
+}
+
+function runOtaCheckAdmin(){
+  fetch('/ota_check', {cache:'no-store'}).then(() => {
+    document.getElementById('otaStatus').textContent = 'check_requested';
+  });
+}
+
+function runBootFactory(){
+  if(!confirm('Factory surume donup cihaz yeniden baslatilsin mi?')) return;
+  fetch('/boot_factory', {cache:'no-store'})
+    .then(r => r.text().then(t => ({ok:r.ok, text:t})))
+    .then(x => {
+      if(!x.ok) throw new Error(x.text || 'Factory gecisi basarisiz');
+      alert(x.text || 'Factory secildi, cihaz yeniden baslatiliyor.');
+    })
+    .catch(e => alert(e.message || 'Factory gecisi basarisiz'));
+}
+
+function runBootPrev(){
+  if(!confirm('Aktif olmayan OTA slotu secilip cihaz yeniden baslatilsin mi?')) return;
+  fetch('/boot_prev', {cache:'no-store'})
+    .then(r => r.text().then(t => ({ok:r.ok, text:t})))
+    .then(x => {
+      if(!x.ok) throw new Error(x.text || 'Onceki OTA gecisi basarisiz');
+      alert(x.text || 'Diger OTA slotu secildi, cihaz yeniden baslatiliyor.');
+    })
+    .catch(e => alert(e.message || 'Onceki OTA gecisi basarisiz'));
 }
 
 function fillClampLow(){
@@ -1080,6 +1125,13 @@ function pull(force=false){
     if(d.rstHist !== undefined) document.getElementById('rstHist').textContent = d.rstHist;
     if(d.rstLastMode !== undefined) document.getElementById('rstLastMode').textContent = d.rstLastMode;
     if(d.rstLastSec !== undefined) document.getElementById('rstLastSec').textContent = d.rstLastSec;
+    document.getElementById('otaCurVer').textContent = d.otaCur || '-';
+    document.getElementById('otaRemoteVer').textContent = d.otaRemote || '-';
+    document.getElementById('otaPart').textContent = d.otaPart || '-';
+    document.getElementById('otaImgState').textContent = d.otaImgState || '-';
+    document.getElementById('otaStatus').textContent = d.otaStatus || '-';
+    document.getElementById('otaAge').textContent = fmtOtaAge(d.otaAgeMs);
+    document.getElementById('otaError').textContent = (d.otaErr && d.otaErr.length) ? d.otaErr : 'Hata yok';
     const liveA = num(d.ia);
     const liveB = num(d.ib);
     const liveC = num(d.ic);
@@ -1214,6 +1266,180 @@ static void handlePing() { server.send(200, "text/plain", "OK"); }
 static void handleManifest() { server.send_P(200, "application/manifest+json", MANIFEST_JSON); }
 static void handleServiceWorker() { server.send_P(200, "application/javascript", SERVICE_WORKER_JS); }
 static void handleAppIcon() { server.send_P(200, "image/svg+xml", APP_ICON_SVG); }
+static void handleOtaCheck() {
+  OTA_Manager::triggerCheckNow();
+  server.send(200, "application/json", "{\"ok\":1}");
+}
+
+static void scheduleDeferredRestart() {
+  s_manualOtaRebootPending = true;
+  s_manualOtaRebootAtMs = millis() + 300;
+}
+
+static void handleBootFactory() {
+  if (!requireAdminAuth()) return;
+  if (!OTA_Manager::selectFactoryBootPartition()) {
+    server.send(500, "text/plain", OTA_Manager::lastErrorText());
+    return;
+  }
+  scheduleDeferredRestart();
+  server.send(200, "text/plain", "Factory secildi, cihaz yeniden baslatiliyor");
+}
+
+static void handleBootPrev() {
+  if (!requireAdminAuth()) return;
+  if (!OTA_Manager::selectAlternateOtaBootPartition()) {
+    server.send(409, "text/plain", OTA_Manager::lastErrorText());
+    return;
+  }
+  scheduleDeferredRestart();
+  server.send(200, "text/plain", "Diger OTA slotu secildi, cihaz yeniden baslatiliyor");
+}
+
+static void failManualOta(const String& reason) {
+  if (s_manualOta.updateBegun) {
+    Update.abort();
+    s_manualOta.updateBegun = false;
+  }
+  s_manualOta.success = false;
+  s_manualOta.lastError = reason;
+  Serial.printf("[OTA] Manual upload reddedildi: %s\n", reason.c_str());
+}
+
+static void handleManualUpdatePage() {
+  if (!requireAdminAuth()) return;
+
+  String html;
+  html.reserve(1800);
+  html += F("<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>Guvenli OTA Yukleme</title>"
+            "<style>"
+            "body{font-family:Arial,sans-serif;background:#f4f1ea;color:#1b1c1d;margin:0;padding:24px}"
+            ".card{max-width:640px;margin:0 auto;background:#fff;border:1px solid #d9d2c5;border-radius:16px;padding:24px}"
+            "h1{margin:0 0 12px;font-size:28px}.muted{color:#6b665c;line-height:1.5}"
+            ".meta{margin:16px 0;padding:14px;background:#f7f3eb;border-radius:12px}"
+            "input[type=file]{display:block;margin:18px 0;width:100%}"
+            "button{border:0;border-radius:999px;padding:14px 20px;background:#184e3b;color:#fff;font-weight:700;cursor:pointer}"
+            "a{color:#184e3b;text-decoration:none;font-weight:700}"
+            "</style></head><body><div class='card'>");
+  html += F("<h1>Guvenli OTA Yukleme</h1>");
+  html += F("<div class='muted'>Bu ekran uygulama firmware .bin dosyalarini kabul eder. "
+            "USB disinda yazma sadece OTA slotlarina yapilir; factory bolumu korunur.</div>");
+  html += F("<div class='meta'><b>Calisan surum:</b> ");
+  html += OTA_Manager::currentVersion();
+  html += F("<br><b>Yazma hedefi:</b> ota_0 / ota_1"
+            "<br><b>Not:</b> USB haricinde factory bolumu yazilmaz.</div>");
+  html += F("<form method='POST' action='/update' enctype='multipart/form-data'>"
+            "<input type='file' name='firmware' accept='.bin,application/octet-stream' required>"
+            "<button type='submit'>BIN YUKLE</button>"
+            "</form><p class='muted'><a href='/admin'>Admin panele don</a></p>"
+            "</div></body></html>");
+  server.send(200, "text/html", html);
+}
+
+static void handleManualUpdateUpload() {
+  if (!server.authenticate(kAdminUser, kAdminPassword)) {
+    return;
+  }
+
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    resetManualOtaState();
+    s_manualOta.active = true;
+    s_manualOta.uploadedName = upload.filename;
+
+    const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
+    if (!next ||
+        (next->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
+         next->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_1)) {
+      failManualOta("Guvenli hedef bulunamadi; sadece ota_0/ota_1 yazilabilir");
+      return;
+    }
+
+    Serial.printf("[OTA] Manual upload basladi: %s\n", upload.filename.c_str());
+    return;
+  }
+
+  if (!s_manualOta.active) return;
+
+  if (upload.status == UPLOAD_FILE_WRITE) {
+    if (s_manualOta.lastError.length()) return;
+
+    if (!s_manualOta.updateBegun) {
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+        failManualOta(String("Update.begin hatasi: ") + Update.errorString());
+        return;
+      }
+      s_manualOta.updateBegun = true;
+      Serial.printf("[OTA] Manual upload ota slotuna kabul edildi: %s\n", s_manualOta.uploadedName.c_str());
+    }
+
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      failManualOta(String("Chunk yazma hatasi: ") + Update.errorString());
+    }
+    return;
+  }
+
+  if (upload.status == UPLOAD_FILE_END) {
+    if (s_manualOta.lastError.length()) return;
+    if (!s_manualOta.updateBegun) {
+      failManualOta("OTA yazma baslatilamadi");
+      return;
+    }
+    if (!Update.end(true)) {
+      failManualOta(String("Update.end hatasi: ") + Update.errorString());
+      return;
+    }
+    s_manualOta.success = true;
+    Serial.printf("[OTA] Manual upload tamamlandi: %s (%u bytes)\n",
+                  s_manualOta.uploadedName.c_str(),
+                  (unsigned)upload.totalSize);
+    return;
+  }
+
+  if (upload.status == UPLOAD_FILE_ABORTED) {
+    failManualOta("Yukleme iptal edildi");
+    s_manualOta.active = false;
+  }
+}
+
+static void handleManualUpdateResult() {
+  if (!server.authenticate(kAdminUser, kAdminPassword)) {
+    server.requestAuthentication(BASIC_AUTH, "RotosisEVSE Admin", "Sifre gerekli");
+    return;
+  }
+
+  int code = s_manualOta.success ? 200 : 400;
+  String body;
+  const char* contentType = "text/plain";
+  if (s_manualOta.success) {
+    contentType = "text/html";
+    body = F("<!doctype html><html><head><meta charset='utf-8'>"
+             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+             "<title>OTA Tamam</title>"
+             "<style>body{font-family:Arial,sans-serif;background:#f4f1ea;color:#1b1c1d;padding:24px}"
+             ".card{max-width:560px;margin:0 auto;background:#fff;border:1px solid #d9d2c5;border-radius:16px;padding:24px}"
+             "</style></head><body><div class='card'><h1>Yukleme Tamam</h1><p>Cihaz yeniden baslatiliyor.</p><p id='s'>Bekleniyor...</p>"
+             "<script>"
+             "setTimeout(function(){"
+             "var tries=0;"
+             "var t=setInterval(function(){"
+             "tries++;"
+             "fetch('/ping',{cache:'no-store'}).then(function(){clearInterval(t);location='/admin';})"
+             ".catch(function(){document.getElementById('s').textContent='Cihaz tekrar aciliyor... ('+tries+')';});"
+             "},1500);"
+             "},1800);"
+             "</script></div></body></html>");
+    s_manualOtaRebootPending = true;
+    s_manualOtaRebootAtMs = millis() + 1500;
+  } else {
+    body = s_manualOta.lastError.length() ? s_manualOta.lastError : "OTA yukleme basarisiz";
+  }
+
+  s_manualOta.active = false;
+  server.send(code, contentType, body);
+}
 
 // Status endpoint'i kullanici panelinin ana veri kaynagidir.
 static void handleStatus() {
@@ -1252,6 +1478,13 @@ static void handleStatus() {
   String ipStr = "-";
   String hostStr = String(kHostName) + ".local";
   bool staOk = (WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0);
+  const char* otaCurrent = OTA_Manager::currentVersion();
+  const char* otaRemote = OTA_Manager::lastRemoteVersion();
+  const char* otaPart = OTA_Manager::runningPartitionLabel();
+  const char* otaImgState = OTA_Manager::runningImageStateLabel();
+  const char* otaStatus = OTA_Manager::lastStatusText();
+  const char* otaError = OTA_Manager::lastErrorText();
+  uint32_t otaAgeMs = OTA_Manager::lastCheckAgeMs();
   if (staOk) {
     wifiSsid = WiFi.SSID();
     wifiLoc = wifiLocationForSsid(wifiSsid);
@@ -1275,9 +1508,8 @@ static void handleStatus() {
     alarmTxt = "Wi-Fi baglantisi yok";
   }
 
-  char json[1960];
   snprintf(
-    json, sizeof(json),
+    s_jsonBuf, sizeof(s_jsonBuf),
     "{\"lInt\":%d,\"onD\":%lu,\"offD\":%lu,\"stable\":%d,"
     "\"cpHigh\":%.2f,\"cpLow\":%.2f,\"adcHigh\":%.3f,\"adcLow\":%.3f,"
     "\"stateRaw\":\"%s\",\"ia\":%.2f,\"ib\":%.2f,\"ic\":%.2f,"
@@ -1286,6 +1518,7 @@ static void handleStatus() {
     "\"state\":\"%s\",\"div\":%.3f,\"thb\":%.2f,\"thc\":%.2f,\"thd\":%.2f,\"the\":%.2f,"
     "\"icalA\":%.2f,\"icalB\":%.2f,\"icalC\":%.2f,\"ioffA\":%.2f,\"ioffB\":%.2f,\"ioffC\":%.2f,"
     "\"rngLowMax\":%.2f,\"rngMidMax\":%.2f,\"rngLowOff\":%.2f,\"rngMidOff\":%.2f,"
+    "\"otaCur\":\"%s\",\"otaRemote\":\"%s\",\"otaPart\":\"%s\",\"otaImgState\":\"%s\",\"otaStatus\":\"%s\",\"otaAgeMs\":%lu,\"otaErr\":\"%s\","
     "\"modeId\":%d,\"mode\":\"%s\",\"limitA\":%.1f,\"staOk\":%d,"
     "\"alarmLv\":%d,\"alarmTxt\":\"%s\","
     "\"sLive\":%d,\"sLiveStart\":%lu,\"sLiveSec\":%lu,\"sLiveKWh\":%.3f,"
@@ -1310,6 +1543,7 @@ static void handleStatus() {
     TH_B_MIN, TH_C_MIN, TH_D_MIN, TH_E_MIN,
     calA, calB, calC, offA, offB, offC,
     rngLowMax, rngMidMax, rngLowOff, rngMidOff,
+    otaCurrent, otaRemote, otaPart, otaImgState, otaStatus, (unsigned long)otaAgeMs, otaError,
     g_chargeMode,
     chargeModeLabel(g_chargeMode),
     safeFinite(g_currentLimitA),
@@ -1327,7 +1561,7 @@ static void handleStatus() {
     resetModeLabel(s_resetLastModeId)
   );
 
-  server.send(200, "application/json", json);
+  server.send(200, "application/json", s_jsonBuf);
 }
 
 // Gecmis seanslar icin ayri JSON endpoint.
@@ -1526,10 +1760,16 @@ void web_init() {
   // HTTP route kayitlari.
   server.on("/", HTTP_GET, handleRoot);
   server.on("/admin", HTTP_GET, handleAdmin);
+  server.on("/settings", HTTP_GET, handleAdmin);
+  server.on("/update", HTTP_GET, handleManualUpdatePage);
+  server.on("/update", HTTP_POST, handleManualUpdateResult, handleManualUpdateUpload);
   server.on("/ping", HTTP_GET, handlePing);
   server.on("/manifest.json", HTTP_GET, handleManifest);
   server.on("/sw.js", HTTP_GET, handleServiceWorker);
   server.on("/app-icon.svg", HTTP_GET, handleAppIcon);
+  server.on("/ota_check", HTTP_GET, handleOtaCheck);
+  server.on("/boot_factory", HTTP_GET, handleBootFactory);
+  server.on("/boot_prev", HTTP_GET, handleBootPrev);
   // Captive portal probe endpoints (Android/iOS/Windows)
   server.on("/generate_204", HTTP_GET, handleRoot);
   server.on("/hotspot-detect.html", HTTP_GET, handleRoot);
@@ -1544,15 +1784,21 @@ void web_init() {
   server.on("/pulse_reset", HTTP_GET, handlePulseReset);
   server.on("/pulse_set", HTTP_GET, handlePulseSet);
   server.onNotFound(handleRoot);
-  ElegantOTA.begin(&server, kAdminUser, kAdminPassword);
   server.begin();
+  s_serverStarted = true;
 }
 
 void web_loop() {
   // Arka plan servisleri her loop'ta buradan yurutulur.
-  ArduinoOTA.handle();
+  s_lastWebLoopMs = millis();
   server.handleClient();
-  ElegantOTA.loop();
+
+  if (s_manualOtaRebootPending && (int32_t)(millis() - s_manualOtaRebootAtMs) >= 0) {
+    s_manualOtaRebootPending = false;
+    Serial.println("[BOOTCTL] Web komutu sonrasi yeniden baslatiliyor");
+    delay(100);
+    ESP.restart();
+  }
 
   // WiFi yeniden baglanti denemesi: seyrek ve kisa timeout ile.
   static uint32_t lastWifiTryMs = 0;
@@ -1587,5 +1833,11 @@ void web_loop() {
   }
 
   refreshMdns();
+}
+
+bool web_ready_for_ota_validation() {
+  bool staOk = (WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0);
+  if (!staOk || !s_serverStarted || s_lastWebLoopMs == 0) return false;
+  return (millis() - s_lastWebLoopMs) < 1500;
 }
 

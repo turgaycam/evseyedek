@@ -1,5 +1,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <Preferences.h>
+#include <esp_ota_ops.h>
+#include <esp_system.h>
 
 #include "app_config.h"
 #include "app_pins.h"
@@ -8,6 +11,119 @@
 #include "net/web_ui.h"
 #include "ui/oled_ui.h"
 #include "io/current_sensor.h"
+#include "OTA_Manager.h"
+
+static constexpr char kOtaManifestUrl[] =
+  "https://raw.githubusercontent.com/turgaycam/evseyedek/main/version.json";
+static constexpr char kGitHubFingerprint[] = "";
+static constexpr uint32_t kOtaAutoCheckIntervalMs = 60UL * 60UL * 1000UL;
+static constexpr uint8_t kMaxConsecutiveWdtResets = 3;
+static constexpr int kForceFactoryPin = 0;             // BOOT butonu (GPIO0)
+static constexpr uint32_t kForceFactoryHoldMs = 10000; // 10 saniye
+
+static bool isWdtResetReason(esp_reset_reason_t reason)
+{
+  return reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT || reason == ESP_RST_WDT;
+}
+
+static bool switchBootToFactory()
+{
+  const esp_partition_t* factory = esp_partition_find_first(
+    ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr
+  );
+  if (factory == nullptr) {
+    Serial.println("[BOOTCTL] Factory partition bulunamadi");
+    return false;
+  }
+  esp_err_t err = esp_ota_set_boot_partition(factory);
+  if (err != ESP_OK) {
+    Serial.printf("[BOOTCTL] Factory secilemedi: %s\n", esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+static void handleForceFactoryByButton()
+{
+  pinMode(kForceFactoryPin, INPUT_PULLUP);
+  uint32_t startMs = millis();
+  while (millis() - startMs < kForceFactoryHoldMs) {
+    if (digitalRead(kForceFactoryPin) != LOW) {
+      return;
+    }
+    delay(10);
+  }
+
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) {
+    Serial.println("[BOOTCTL] Zaten factory partitionda");
+    return;
+  }
+
+  if (switchBootToFactory()) {
+    Serial.println("[BOOTCTL] GPIO0 ile factory secildi, yeniden baslatiliyor");
+    delay(100);
+    esp_restart();
+  }
+}
+
+static void pollForceFactoryByButtonRuntime()
+{
+  static bool pressActive = false;
+  static bool holdHandled = false;
+  static uint32_t pressStartMs = 0;
+
+  bool pressed = (digitalRead(kForceFactoryPin) == LOW);
+  if (!pressed) {
+    pressActive = false;
+    holdHandled = false;
+    pressStartMs = 0;
+    return;
+  }
+
+  if (!pressActive) {
+    pressActive = true;
+    holdHandled = false;
+    pressStartMs = millis();
+    return;
+  }
+
+  if (holdHandled || (millis() - pressStartMs) < kForceFactoryHoldMs) return;
+  holdHandled = true;
+
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) {
+    Serial.println("[BOOTCTL] Runtime hold algilandi ama zaten factory partitionda");
+    return;
+  }
+
+  if (switchBootToFactory()) {
+    Serial.println("[BOOTCTL] Runtime hold ile factory secildi, yeniden baslatiliyor");
+    delay(100);
+    esp_restart();
+  }
+}
+
+static void handleRescueFallbackIfNeeded()
+{
+  Preferences prefs;
+  if (!prefs.begin("bootctl", false)) return;
+
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  uint8_t failCount = prefs.getUChar("wdt_cnt", 0);
+  failCount = isWdtResetReason(resetReason) ? (uint8_t)(failCount + 1) : 0;
+  prefs.putUChar("wdt_cnt", failCount);
+
+  if (failCount >= kMaxConsecutiveWdtResets && switchBootToFactory()) {
+    prefs.putUChar("wdt_cnt", 0);
+    prefs.end();
+    Serial.println("[BOOTCTL] 3x WDT reset algilandi, factory secildi");
+    delay(50);
+    esp_restart();
+  }
+
+  prefs.end();
+}
 
 // Bu dosya projenin merkez akisidir.
 // Neyi nereden degistirecegini hizli bulmak icin:
@@ -141,6 +257,8 @@ void setup()
   Serial.begin(115200);
   delay(200);
   Serial.println("BOOT OK");
+  handleForceFactoryByButton();
+  handleRescueFallbackIfNeeded();
 
   pinMode(STATE_LED_PIN, OUTPUT);
   pinMode(WIFI_LED_PIN, OUTPUT);
@@ -152,6 +270,7 @@ void setup()
 
   // Web + OTA
   web_init();
+  OTA_Manager::begin(kOtaManifestUrl, kOtaAutoCheckIntervalMs, kGitHubFingerprint);
 
   // OLED
   oled_init();
@@ -184,8 +303,11 @@ void loop()
   // 4) ekran ve LED guncellemesi
   // 5) PWM ve role kararinin uygulanmasi
 
+  pollForceFactoryByButtonRuntime();
+
   // Web sunucu dongusu
   web_loop();
+  OTA_Manager::loop();
 
   // Akim sensoru dongusu
   current_sensor_loop();

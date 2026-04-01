@@ -5,3 +5,4 @@
 
 void web_init();
 void web_loop();
+bool web_ready_for_ota_validation();
