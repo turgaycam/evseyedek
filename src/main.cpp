@@ -20,6 +20,7 @@ static constexpr uint32_t kOtaAutoCheckIntervalMs = 60UL * 60UL * 1000UL;
 static constexpr uint8_t kMaxConsecutiveWdtResets = 3;
 static constexpr int kForceFactoryPin = 0;             // BOOT butonu (GPIO0)
 static constexpr uint32_t kForceFactoryHoldMs = 10000; // 10 saniye
+static bool sFactoryRestartPending = false;
 
 static bool isWdtResetReason(esp_reset_reason_t reason)
 {
@@ -61,7 +62,10 @@ static void handleForceFactoryByButton()
   }
 
   if (switchBootToFactory()) {
-    Serial.println("[BOOTCTL] GPIO0 ile factory secildi, yeniden baslatiliyor");
+    Serial.println("[BOOTCTL] GPIO0 ile factory secildi; buton birakilinca yeniden baslatilacak");
+    while (digitalRead(kForceFactoryPin) == LOW) {
+      delay(10);
+    }
     delay(100);
     esp_restart();
   }
@@ -98,9 +102,44 @@ static void pollForceFactoryByButtonRuntime()
   }
 
   if (switchBootToFactory()) {
-    Serial.println("[BOOTCTL] Runtime hold ile factory secildi, yeniden baslatiliyor");
-    delay(100);
-    esp_restart();
+    Serial.println("[BOOTCTL] Runtime hold ile factory secildi; buton birakilinca yeniden baslatilacak");
+    sFactoryRestartPending = true;
+  }
+}
+
+static void processPendingFactoryRestart()
+{
+  if (!sFactoryRestartPending) return;
+  if (digitalRead(kForceFactoryPin) == LOW) return;
+
+  sFactoryRestartPending = false;
+  Serial.println("[BOOTCTL] Buton birakildi, factory icin yeniden baslatiliyor");
+  delay(100);
+  esp_restart();
+}
+
+static void ensureForceFactoryPinMode()
+{
+  static bool configured = false;
+  if (configured) return;
+  pinMode(kForceFactoryPin, INPUT_PULLUP);
+  configured = true;
+}
+
+static void serviceFactoryButton()
+{
+  ensureForceFactoryPinMode();
+  processPendingFactoryRestart();
+  if (sFactoryRestartPending) return;
+  pollForceFactoryByButtonRuntime();
+}
+
+static void initFactoryButton()
+{
+  ensureForceFactoryPinMode();
+  handleForceFactoryByButton();
+  if (sFactoryRestartPending) {
+    processPendingFactoryRestart();
   }
 }
 
@@ -257,7 +296,7 @@ void setup()
   Serial.begin(115200);
   delay(200);
   Serial.println("BOOT OK");
-  handleForceFactoryByButton();
+  initFactoryButton();
   handleRescueFallbackIfNeeded();
 
   pinMode(STATE_LED_PIN, OUTPUT);
@@ -303,7 +342,7 @@ void loop()
   // 4) ekran ve LED guncellemesi
   // 5) PWM ve role kararinin uygulanmasi
 
-  pollForceFactoryByButtonRuntime();
+  serviceFactoryButton();
 
   // Web sunucu dongusu
   web_loop();
