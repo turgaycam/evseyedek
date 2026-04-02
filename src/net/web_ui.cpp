@@ -518,11 +518,6 @@ body.state-E,body.state-F{--accent:#ff8b8b;--accentDeep:#ff6464;--accentSoft:rgb
       <span id="it">0.0</span>
       <span id="limitA">32.0</span>
       <span id="loadPct">0%</span>
-      <span id="loadPctCard">0%</span>
-      <span id="gaugeLabel">1 faz / 32.0 A</span>
-      <span id="gaugePct">0%</span>
-      <span id="energyMeta">Aktif seans</span>
-      <span id="timeMeta">1 faz</span>
     </div>
   </section>
 
@@ -543,20 +538,11 @@ const stateMeta={
   E:{name:"Şarj Hatası",hint:"Pilot hata durumu"},
   F:{name:"Kritik Hata",hint:"Koruma aktif"}
 };
-const gaugeRing=document.getElementById("gaugeValue");
-const gaugeCirc=gaugeRing?(2*Math.PI*gaugeRing.r.baseVal.value):0;
-if(gaugeRing){
-  gaugeRing.style.strokeDasharray=gaugeCirc.toFixed(1);
-  gaugeRing.style.strokeDashoffset=gaugeCirc.toFixed(1);
-}
 const carEls={
   carSvg:document.getElementById("carSvg"),
   carFill:document.getElementById("carFill"),
-  carFillInner:document.getElementById("carFillInner"),
-  chargeBar:document.getElementById("chargeBar"),
-  chargeBarInner:document.getElementById("chargeBarInner")
+  carFillInner:document.getElementById("carFillInner")
 };
-const BAT_KWH=80;
 const CAR_IMG_SRC=(carEls.carSvg&&carEls.carSvg.getAttribute("src"))?carEls.carSvg.getAttribute("src"):"";
 if(CAR_IMG_SRC&&carEls.carFill){
   carEls.carFill.style.setProperty('--car-img','url('+CAR_IMG_SRC+')');
@@ -574,14 +560,15 @@ function updateCar(d){
   else if(st==="D") carEls.carFill.classList.add("stateD");
   else if(st==="E") carEls.carFill.classList.add("stateE");
   else if(st==="F") carEls.carFill.classList.add("stateF");
-  const socVal=Number.isFinite(d.soc)?d.soc:(Number.isFinite(d.batt)?d.batt:null);
-  let pctRaw=Number.isFinite(socVal)?socVal:Math.round((Number(d.eKWh)||0)/BAT_KWH*100);
-  pctRaw=Math.max(0,Math.min(100,pctRaw));
-  let fillPct=pctRaw;
-  if(charging) fillPct=Math.max(fillPct,8);
+  const ia=Number(d.ia)||0, ib=Number(d.ib)||0, ic=Number(d.ic)||0;
+  const phaseCount=Math.max(1,Number(d.phase)||1);
+  const limitA=Math.max(6,Number(d.limitA)||32);
+  const totalLimit=phaseCount*limitA;
+  const loadPct=clamp((ia+ib+ic)/totalLimit*100,0,100);
+  let fillPct=0;
+  if(charging) fillPct=Math.max(loadPct,12);
   else if(isCable) fillPct=Math.max(fillPct,12);
   else if(isError) fillPct=Math.max(fillPct,24);
-  if(st==="A") fillPct=0;
   carEls.carFillInner.style.height=Math.max(0,Math.min(100,fillPct))+"%";
 }
 function fmtTime(sec){
@@ -609,12 +596,7 @@ function setSync(ok){
 }
 function setGauge(loadPct){
   const pct=clamp(loadPct,0,100);
-  if(gaugeRing){
-    gaugeRing.style.strokeDashoffset=(gaugeCirc*(1-pct/100)).toFixed(1);
-  }
-  setText("gaugePct",pct.toFixed(0)+"%");
   setText("loadPct",pct.toFixed(0)+"%");
-  setText("loadPctCard",pct.toFixed(0)+"%");
 }
 function pushLivePoint(value){
   livePoints.push(clamp(value,0,999));
@@ -693,13 +675,10 @@ function pull(){
     setText('pwr',powerKw.toFixed(2));
     setText('ekwh',energy.toFixed(1));
     setText('tsec',fmtTime(timeSec));
-    setText('energyMeta',liveSession?"Aktif seans":"Son okuma");
-    setText('timeMeta',phaseCount+" faz");
     setText('limitA',limitA.toFixed(1));
     setText('limitMetric',limitA.toFixed(1));
     setText('limitMeta',phaseCount+" faz / "+limitA.toFixed(1)+" A limit");
     setText('phaseSummary',phaseCount+" faz • "+loadPct.toFixed(0)+"% doluluk");
-    setText('gaugeLabel',phaseCount+" faz / "+limitA.toFixed(1)+" A");
     setText('stationLabel',stationBase+" - DC");
     updateChargeAction(Number(d.modeId)||0);
     if(d.rLbl!==undefined) setText('relay',"R:"+d.rLbl);
