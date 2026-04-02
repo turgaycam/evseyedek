@@ -13,21 +13,24 @@
 #include "io/current_sensor.h"
 #include "OTA_Manager.h"
 
-// OTA manifest URL: GitHub ana branch'taki version.json
-static constexpr char kOtaManifestUrl[] = "https://raw.githubusercontent.com/turgaycam/evseyedek/main/version.json";
-// Sertifika sabitlemek istersen SHA1 fingerprint'i buraya yaz.
+static constexpr char kOtaManifestUrl[] =
+  "https://raw.githubusercontent.com/turgaycam/evseyedek/main/version.json";
 static constexpr char kGitHubFingerprint[] = "";
+static constexpr uint32_t kOtaAutoCheckIntervalMs = 60UL * 60UL * 1000UL;
 static constexpr uint8_t kMaxConsecutiveWdtResets = 3;
-static constexpr int kForceFactoryPin = 0;               // BOOT butonu (GPIO0)
-static constexpr uint32_t kForceFactoryHoldMs = 5000;    // 5 saniye
+static constexpr int kForceFactoryPin = 0;             // BOOT butonu (GPIO0)
+static constexpr uint32_t kForceFactoryHoldMs = 10000; // 10 saniye
 
-static bool isWdtResetReason(esp_reset_reason_t r) {
-  return r == ESP_RST_TASK_WDT || r == ESP_RST_INT_WDT || r == ESP_RST_WDT;
+static bool isWdtResetReason(esp_reset_reason_t reason)
+{
+  return reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT || reason == ESP_RST_WDT;
 }
 
-static bool switchBootToFactory() {
+static bool switchBootToFactory()
+{
   const esp_partition_t* factory = esp_partition_find_first(
-      ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
+    ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr
+  );
   if (factory == nullptr) {
     Serial.println("[BOOTCTL] Factory partition bulunamadi");
     return false;
@@ -40,12 +43,13 @@ static bool switchBootToFactory() {
   return true;
 }
 
-static void handleForceFactoryByButton() {
+static void handleForceFactoryByButton()
+{
   pinMode(kForceFactoryPin, INPUT_PULLUP);
-  uint32_t start = millis();
-  while (millis() - start < kForceFactoryHoldMs) {
+  uint32_t startMs = millis();
+  while (millis() - startMs < kForceFactoryHoldMs) {
     if (digitalRead(kForceFactoryPin) != LOW) {
-      return; // Buton sure boyunca basili kalmadi
+      return;
     }
     delay(10);
   }
@@ -57,13 +61,14 @@ static void handleForceFactoryByButton() {
   }
 
   if (switchBootToFactory()) {
-    Serial.println("[BOOTCTL] GPIO0 ile force factory tetiklendi, yeniden baslatiliyor.");
+    Serial.println("[BOOTCTL] GPIO0 ile factory secildi, yeniden baslatiliyor");
     delay(100);
     esp_restart();
   }
 }
 
-static void pollForceFactoryByButtonRuntime() {
+static void pollForceFactoryByButtonRuntime()
+{
   static bool pressActive = false;
   static bool holdHandled = false;
   static uint32_t pressStartMs = 0;
@@ -88,39 +93,33 @@ static void pollForceFactoryByButtonRuntime() {
 
   const esp_partition_t* running = esp_ota_get_running_partition();
   if (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) {
-    Serial.println("[BOOTCTL] Runtime GPIO0 hold algilandi ama zaten factory partitionda");
+    Serial.println("[BOOTCTL] Runtime hold algilandi ama zaten factory partitionda");
     return;
   }
 
   if (switchBootToFactory()) {
-    Serial.println("[BOOTCTL] Runtime GPIO0 hold ile FACTORY secildi, yeniden baslatiliyor.");
+    Serial.println("[BOOTCTL] Runtime hold ile factory secildi, yeniden baslatiliyor");
     delay(100);
     esp_restart();
   }
 }
 
-static void handleRescueFallbackIfNeeded() {
+static void handleRescueFallbackIfNeeded()
+{
   Preferences prefs;
   if (!prefs.begin("bootctl", false)) return;
 
-  esp_reset_reason_t rr = esp_reset_reason();
+  esp_reset_reason_t resetReason = esp_reset_reason();
   uint8_t failCount = prefs.getUChar("wdt_cnt", 0);
-  if (isWdtResetReason(rr)) {
-    failCount++;
-  } else {
-    failCount = 0;
-  }
+  failCount = isWdtResetReason(resetReason) ? (uint8_t)(failCount + 1) : 0;
   prefs.putUChar("wdt_cnt", failCount);
 
-  if (failCount >= kMaxConsecutiveWdtResets) {
-    const esp_partition_t* factory = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
-    if (factory != nullptr && esp_ota_set_boot_partition(factory) == ESP_OK) {
-      prefs.putUChar("wdt_cnt", 0);
-      prefs.end();
-      Serial.println("[BOOTCTL] 3x WDT reset algilandi, factory partition secildi.");
-      delay(50);
-      esp_restart();
-    }
+  if (failCount >= kMaxConsecutiveWdtResets && switchBootToFactory()) {
+    prefs.putUChar("wdt_cnt", 0);
+    prefs.end();
+    Serial.println("[BOOTCTL] 3x WDT reset algilandi, factory secildi");
+    delay(50);
+    esp_restart();
   }
 
   prefs.end();
@@ -136,7 +135,7 @@ static void handleRescueFallbackIfNeeded() {
 // - web panel ve API: src/net/web_ui.cpp
 
 // CP yorumlama ayarlari. Web panelinden de guncellenebilir.
-float CP_DIVIDER_RATIO = 4.41f;
+float CP_DIVIDER_RATIO = 4.62f;
 float TH_A_MIN = 11.0f;
 float TH_B_MIN = 9.6f;
 float TH_C_MIN = 7.8f;
@@ -271,7 +270,7 @@ void setup()
 
   // Web + OTA
   web_init();
-  OTA_Manager::begin(kOtaManifestUrl, 60UL * 1000UL, kGitHubFingerprint);
+  OTA_Manager::begin(kOtaManifestUrl, kOtaAutoCheckIntervalMs, kGitHubFingerprint);
 
   // OLED
   oled_init();
@@ -303,16 +302,6 @@ void loop()
   // 3) enerji / seans hesabi
   // 4) ekran ve LED guncellemesi
   // 5) PWM ve role kararinin uygulanmasi
-
-#if defined(OTA_BAD_TEST)
-  // OTA rollback test: yeni firmware birkac saniye sonra yeniden baslar.
-  static uint32_t badStartMs = millis();
-  if (millis() - badStartMs > 5000) {
-    Serial.println("[TEST] OTA_BAD_TEST restart");
-    delay(100);
-    esp_restart();
-  }
-#endif
 
   pollForceFactoryByButtonRuntime();
 

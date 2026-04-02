@@ -164,8 +164,9 @@ static const KnownWifi kKnownWifis[] = {
 WiFiMulti wifiMulti;
 static WebServer server(80);
 static bool wifiEventsReady = false;
-static uint32_t s_lastHttpRequestMs = 0;
-static uint32_t s_successfulHttpResponses = 0;
+static char s_jsonBuf[4096];
+static bool s_serverStarted = false;
+static uint32_t s_lastWebLoopMs = 0;
 static uint32_t s_resetTotalCount = 0;
 static uint32_t s_resetNowCount = 0;
 static uint32_t s_resetHistoryCount = 0;
@@ -249,104 +250,6 @@ static float safeFinite(float v) {
   return v;
 }
 
-static void appendJsonEscaped(String& out, const char* value) {
-  const char* src = value ? value : "";
-  while (*src) {
-    const char c = *src++;
-    switch (c) {
-      case '\"': out += F("\\\""); break;
-      case '\\': out += F("\\\\"); break;
-      case '\b': out += F("\\b"); break;
-      case '\f': out += F("\\f"); break;
-      case '\n': out += F("\\n"); break;
-      case '\r': out += F("\\r"); break;
-      case '\t': out += F("\\t"); break;
-      default:
-        if ((unsigned char)c < 0x20) {
-          char buf[7];
-          snprintf(buf, sizeof(buf), "\\u%04x", (unsigned char)c);
-          out += buf;
-        } else {
-          out += c;
-        }
-        break;
-    }
-  }
-}
-
-static void appendJsonStringField(String& out, const char* key, const char* value, bool withComma = true) {
-  out += '\"';
-  out += key;
-  out += F("\":\"");
-  appendJsonEscaped(out, value);
-  out += '\"';
-  if (withComma) out += ',';
-}
-
-struct DisplayCurrentState {
-  bool primed = false;
-  float ia = 0.0f;
-  float ib = 0.0f;
-  float ic = 0.0f;
-};
-
-static DisplayCurrentState s_displayCurrent;
-
-static float smoothDisplayCurrent(float previous, float target) {
-  float delta = target - previous;
-  float alpha = (fabsf(delta) > 2.0f) ? 0.28f : 0.16f;
-  if (target < previous) alpha *= 0.72f;
-  float blended = previous + (delta * alpha);
-  if (blended < 0.08f) blended = 0.0f;
-  return blended;
-}
-
-static void harmonizeThreePhaseDisplay(float* ia, float* ib, float* ic) {
-  if (!ia || !ib || !ic) return;
-  const float activeTh = 0.90f;
-  if (*ia < activeTh || *ib < activeTh || *ic < activeTh) return;
-
-  float maxV = *ia;
-  if (*ib > maxV) maxV = *ib;
-  if (*ic > maxV) maxV = *ic;
-
-  float minV = *ia;
-  if (*ib < minV) minV = *ib;
-  if (*ic < minV) minV = *ic;
-
-  float avg = (*ia + *ib + *ic) / 3.0f;
-  float spread = maxV - minV;
-  if (spread <= 0.45f || (avg > 0.1f && (spread / avg) <= 0.06f)) {
-    *ia = avg;
-    *ib = avg;
-    *ic = avg;
-  }
-}
-
-static void updateDisplayCurrents(float rawIa,
-                                  float rawIb,
-                                  float rawIc,
-                                  float* outIa,
-                                  float* outIb,
-                                  float* outIc) {
-  if (!s_displayCurrent.primed) {
-    s_displayCurrent.ia = rawIa;
-    s_displayCurrent.ib = rawIb;
-    s_displayCurrent.ic = rawIc;
-    s_displayCurrent.primed = true;
-  } else {
-    s_displayCurrent.ia = smoothDisplayCurrent(s_displayCurrent.ia, rawIa);
-    s_displayCurrent.ib = smoothDisplayCurrent(s_displayCurrent.ib, rawIb);
-    s_displayCurrent.ic = smoothDisplayCurrent(s_displayCurrent.ic, rawIc);
-  }
-
-  harmonizeThreePhaseDisplay(&s_displayCurrent.ia, &s_displayCurrent.ib, &s_displayCurrent.ic);
-
-  if (outIa) *outIa = roundf(s_displayCurrent.ia * 10.0f) / 10.0f;
-  if (outIb) *outIb = roundf(s_displayCurrent.ib * 10.0f) / 10.0f;
-  if (outIc) *outIc = roundf(s_displayCurrent.ic * 10.0f) / 10.0f;
-}
-
 static const char* wifiLocationForSsid(const String& connectedSsid) {
   for (size_t i = 0; i < (sizeof(kKnownWifis) / sizeof(kKnownWifis[0])); i++) {
     if (connectedSsid == kKnownWifis[i].ssid) return kKnownWifis[i].location;
@@ -360,16 +263,6 @@ static bool requireAdminAuth() {
   }
   server.requestAuthentication(BASIC_AUTH, "RotosisEVSE Admin", "Sifre gerekli");
   return false;
-}
-
-static void noteWebActivity() {
-  // Kullanici aktifken periyodik OTA kontrolu web sunucusunu bloklamasin.
-  s_lastHttpRequestMs = millis();
-  OTA_Manager::deferPeriodicChecks(15000);
-}
-
-static void noteHttpResponseSent() {
-  s_successfulHttpResponses++;
 }
 
 static const char* chargeModeLabel(int mode) {
@@ -531,7 +424,7 @@ body.state-E,body.state-F{--accent:#ff8b8b;--accentDeep:#ff6464;--accentSoft:rgb
 </head><body class="state-A">
 <div class="app">
   <div class="topbar">
-    <a class="backBtn" href="/settings" aria-label="Ayarlar" title="Ayarlar">&#9881;</a>
+    <a class="backBtn" href="/admin" aria-label="Ayarlar" title="Ayarlar">&#9881;</a>
     <div class="statusWrap">
       <div class="statusPill" id="statusPill">
         <span class="statusIcon" aria-hidden="true">
@@ -859,6 +752,7 @@ pull();
 
 )HTML";
 
+
 static const char MANIFEST_JSON[] PROGMEM = R"JSON(
 {
   "name": "RotosisEVSE",
@@ -866,8 +760,8 @@ static const char MANIFEST_JSON[] PROGMEM = R"JSON(
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#07131f",
-  "theme_color": "#0a1d2f",
+  "background_color": "#08131c",
+  "theme_color": "#0d1a2b",
   "icons": [
     {
       "src": "/app-icon.svg",
@@ -886,7 +780,7 @@ static const char MANIFEST_JSON[] PROGMEM = R"JSON(
 )JSON";
 
 static const char SERVICE_WORKER_JS[] PROGMEM = R"JS(
-const CACHE_NAME = "evse-pwa-v5";
+const CACHE_NAME = "evse-pwa-v4";
 const ASSETS = ["/", "/manifest.json", "/app-icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -963,37 +857,38 @@ static const char APP_ICON_SVG[] PROGMEM = R"SVG(
 static const char MAIN_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RotosisEVSE Settings</title>
+<title>RotosisEVSE Panel</title>
 <style>
-body{font-family:Arial;margin:0;background:#09111d;color:#e8eefc}
-.wrap{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:12px;padding:12px}
-@media(max-width:960px){.wrap{grid-template-columns:1fr}}
-.card{background:#111a2b;border:1px solid #20304a;border-radius:14px;padding:12px}
+body{font-family:Arial;margin:0;background:#0b1220;color:#e8eefc}
+.wrap{display:grid;grid-template-columns:1.2fr .8fr;gap:12px;padding:12px}
+@media(max-width:900px){.wrap{grid-template-columns:1fr}}
+.card{background:#111a2b;border:1px solid #20304a;border-radius:12px;padding:12px}
 h2{margin:0 0 10px 0;font-size:14px;color:#b7c5e6}
-.kv{display:grid;grid-template-columns:150px 1fr;gap:8px;margin:6px 0}
-@media(max-width:560px){.kv{grid-template-columns:1fr}}
+.kv{display:grid;grid-template-columns:140px 1fr;gap:8px;margin:6px 0}
 .k{color:#b7c5e6;font-size:12px}
 .v{font-weight:700}
 .mono{font-family:monospace;color:#00ffaa}
-input{width:100%;padding:8px;border-radius:10px;border:1px solid #20304a;background:#0c1424;color:#e8eefc;box-sizing:border-box}
+input{width:100%;padding:8px;border-radius:10px;border:1px solid #20304a;background:#0c1424;color:#e8eefc}
 .btns{display:flex;flex-wrap:wrap;gap:8px}
 button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#0c1424;color:#e8eefc;cursor:pointer}
 .primary{background:rgba(0,200,150,.18);border-color:rgba(0,200,150,.45)}
 .danger{background:rgba(255,77,77,.14);border-color:rgba(255,77,77,.40)}
-.small{font-size:11px;color:#b7c5e6;line-height:1.5}
-.sep{height:1px;background:#20304a;margin:12px 0}
-.hero{background:linear-gradient(180deg,rgba(0,200,150,.10),rgba(0,0,0,0));border:1px solid #20304a;border-radius:12px;padding:10px;margin-bottom:10px}
+.small{font-size:11px;color:#b7c5e6}
+.sep{height:1px;background:#20304a;margin:10px 0}
+
+.hero{background:linear-gradient(180deg, rgba(0,200,150,.10), rgba(0,0,0,0));border:1px solid #20304a;border-radius:12px;padding:10px;margin-bottom:10px}
 .heroTop{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
 .badge{font-family:monospace;font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid rgba(0,200,150,.45);background:rgba(0,200,150,.12);color:#00ffaa}
 .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 @media(max-width:680px){.grid3,.grid2{grid-template-columns:1fr}}
 .hintBox{padding:10px 12px;border-radius:12px;background:rgba(0,200,150,.08);border:1px solid rgba(0,200,150,.18);color:#bde9dd;font-size:12px;line-height:1.55}
+
 </style></head><body>
 
 <div class="wrap">
   <div class="card">
-    <h2>CANLI VERILER</h2>
+    <h2>CANLI VERÄ°LER</h2>
     <div class="kv"><div class="k">State (Stable/Raw)</div><div class="v mono"><span id="sStb">-</span> / <span id="sRaw">-</span></div></div>
     <div class="kv"><div class="k">CP High / Low</div><div class="v mono"><span id="cH">-</span> / <span id="cL">-</span></div></div>
     <div class="kv"><div class="k">ADC High / Low</div><div class="v mono"><span id="aH">-</span> / <span id="aL">-</span></div></div>
@@ -1027,11 +922,11 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
     <h2>PENS AMPERMETRE YARDIMI</h2>
     <div class="kv"><div class="k">Canli A / B / C</div><div class="v mono"><span id="liveIa">-</span> / <span id="liveIb">-</span> / <span id="liveIc">-</span> A</div></div>
     <div class="kv"><div class="k">Canli ortalama</div><div class="v mono"><span id="liveIAvg">-</span> A</div></div>
-    <div class="kv"><div class="k">Pens 0-10A referans</div><div class="v"><input id="clampLow" onfocus="p()" onblur="r()" placeholder="ornek 8.6"></div></div>
-    <div class="btns"><button onclick="fillClampLow()">Canli degerden Ical doldur</button></div>
-    <div class="kv"><div class="k">Pens 10-30A referans</div><div class="v"><input id="clampMid" onfocus="p()" onblur="r()" placeholder="ornek 16.4"></div></div>
-    <div class="btns"><button onclick="fillClampMid()">Canli degerden orta offset doldur</button></div>
-    <div class="small">Ilk buton pens degerine gore `Ical A/B/C` alanlarini yaklastirir. Ikinci buton pens ile ekran farkina gore `10-30A` ofsetini hesaplar.</div>
+    <div class="kv"><div class="k">Pens 0-10A A / B / C</div><div class="v grid3"><input id="clampLowA" onfocus="p()" onblur="r()" placeholder="A"><input id="clampLowB" onfocus="p()" onblur="r()" placeholder="B"><input id="clampLowC" onfocus="p()" onblur="r()" placeholder="C"></div></div>
+    <div class="btns"><button onclick="fillClampLow()">Pens A/B/C ile Ical doldur</button></div>
+    <div class="kv"><div class="k">Pens 10-30A A / B / C</div><div class="v grid3"><input id="clampMidA" onfocus="p()" onblur="r()" placeholder="A"><input id="clampMidB" onfocus="p()" onblur="r()" placeholder="B"><input id="clampMidC" onfocus="p()" onblur="r()" placeholder="C"></div></div>
+    <div class="btns"><button onclick="fillClampMid()">Pens A/B/C ile offset doldur</button></div>
+    <div class="small">Ilk buton her faz icin girilen pens degerine gore `Ical A/B/C` alanlarini ayarlar. Ikinci buton her fazin pens-ekran farkina gore `Offset A/B/C` alanlarini doldurur.</div>
 
     <div class="btns" style="margin-top:12px">
       <button class="primary" onclick="applyCal()">UYGULA</button>
@@ -1042,50 +937,51 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
 
   <div class="card">
     <div class="hero" id="displayPanel">
-      <div class="heroTop">
-        <div style="display:flex;gap:8px;align-items:center">
-          <h2 style="margin:0">RotosisEVSE</h2>
-          <span class="badge" id="badgeState">STATE:-</span>
-        </div>
-        <span class="badge" id="badgeRelay">R: -</span>
-      </div>
-      <div class="kv"><div class="k">I1 / I2 / I3</div><div class="v mono"><span id="i1">-</span> / <span id="i2">-</span> / <span id="i3">-</span> A</div></div>
-      <div class="kv"><div class="k">Power</div><div class="v mono"><span id="pwr">-</span> kW</div></div>
-      <div class="kv"><div class="k">Energy</div><div class="v mono"><span id="ekwh">-</span> kWh</div></div>
-      <div class="kv"><div class="k">Time</div><div class="v mono"><span id="tsec">-</span></div></div>
-      <div class="kv"><div class="k">Phase</div><div class="v mono"><span id="phase">-</span></div></div>
-      <div class="kv"><div class="k">Wi-Fi</div><div class="v mono"><span id="wifiSsid">-</span> (<span id="wifiLoc">-</span>)</div></div>
-      <div class="kv"><div class="k">IP</div><div class="v mono"><span id="ip">-</span></div></div>
-      <div class="kv"><div class="k">Host</div><div class="v mono"><span id="host">-</span></div></div>
-      <div class="kv"><div class="k">Relay</div><div class="v mono"><span id="rLbl">-</span></div></div>
+  <div class="heroTop">
+    <div style="display:flex;gap:8px;align-items:center">
+      <h2 style="margin:0">RotosisEVSE</h2>
+      <span class="badge" id="badgeState">STATE:-</span>
+    </div>
+    <span class="badge" id="badgeRelay">R: -</span>
+  </div>
+  <div class="kv"><div class="k">I1 / I2 / I3</div><div class="v mono"><span id="i1">-</span> / <span id="i2">-</span> / <span id="i3">-</span> A</div></div>
+  <div class="kv"><div class="k">Power</div><div class="v mono"><span id="pwr">-</span> kW</div></div>
+  <div class="kv"><div class="k">Energy</div><div class="v mono"><span id="ekwh">-</span> kWh</div></div>
+  <div class="kv"><div class="k">Time</div><div class="v mono"><span id="tsec">-</span></div></div>
+  <div class="kv"><div class="k">Phase</div><div class="v mono"><span id="phase">-</span></div></div>
+  <div class="kv"><div class="k">Wi-Fi</div><div class="v mono"><span id="wifiSsid">-</span> (<span id="wifiLoc">-</span>)</div></div>
+  <div class="kv"><div class="k">IP</div><div class="v mono"><span id="ip">-</span></div></div>
+  <div class="kv"><div class="k">Host</div><div class="v mono"><span id="host">-</span></div></div>
+  <div class="kv"><div class="k">Relay</div><div class="v mono"><span id="rLbl">-</span></div></div>
+</div>
     </div>
 
     <div class="sep"></div>
 
-    <h2>ROLE</h2>
+    <h2>RÃ¶le</h2>
     <div class="btns">
-      <button class="primary" onclick="send('/relay?on=1')">MANUEL AC</button>
+      <button class="primary" onclick="send('/relay?on=1')">MANUEL AÃ‡</button>
       <button class="danger" onclick="send('/relay?on=0')">MANUEL BIRAK</button>
-      <button onclick="send('/relay_auto?en=1')">AUTO AC</button>
+      <button onclick="send('/relay_auto?en=1')">AUTO AÃ‡</button>
     </div>
-    <div class="small">Not: Manuel komut auto akisina aninda mudahale eder.</div>
+    <div class="small">Not: MANUEL komut AUTOâ€™yu kapatÄ±r.</div>
     <div class="sep"></div>
 
-    <h2>MOSFET TEST</h2>
+    <h2>MOSFET Test</h2>
     <div class="btns">
       <button class="danger" onclick="send('/pulse_reset')">RESET (GPIO 7)</button>
       <button class="primary" onclick="send('/pulse_set')">SET (GPIO 15)</button>
     </div>
-    <div class="small">Not: 100ms HIGH darbe yollar.</div>
+    <div class="small">Not: 100ms HIGH darbe.</div>
     <div class="sep"></div>
 
-    <h2>SIFIRLAMA GECMISI</h2>
+    <h2>Sifirlama Gecmisi</h2>
     <div class="kv"><div class="k">Toplam</div><div class="v mono"><span id="rstTotal">0</span></div></div>
     <div class="kv"><div class="k">Anlik / Gecmis</div><div class="v mono"><span id="rstNow">0</span> / <span id="rstHist">0</span></div></div>
-    <div class="kv"><div class="k">Son islem</div><div class="v mono"><span id="rstLastMode">YOK</span> @ <span id="rstLastSec">0</span>s</div></div>
+    <div class="kv"><div class="k">Son Islem</div><div class="v mono"><span id="rstLastMode">YOK</span> @ <span id="rstLastSec">0</span>s</div></div>
 
     <div class="sep"></div>
-    <h2>OTA TESHIS</h2>
+    <h2>OTA Teshis</h2>
     <div class="kv"><div class="k">FW / Remote</div><div class="v mono"><span id="otaCurVer">-</span> / <span id="otaRemoteVer">-</span></div></div>
     <div class="kv"><div class="k">Calisan bolum</div><div class="v mono"><span id="otaPart">-</span></div></div>
     <div class="kv"><div class="k">Image state</div><div class="v mono"><span id="otaImgState">-</span></div></div>
@@ -1095,17 +991,25 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
     <div class="btns" style="margin-top:10px">
       <button class="primary" onclick="window.location='/update'">BIN YUKLE</button>
       <button class="primary" onclick="runOtaCheckAdmin()">OTA KONTROL ET</button>
+      <button onclick="runBootPrev()">ONCEKI OTA'YA DON</button>
+      <button class="danger" onclick="runBootFactory()">FACTORY'E DON</button>
     </div>
+    <div class="small">Not: GitHub kontrolu saatte bir otomatik calisir. `Factory'e don` USB ile yukledigin sabit kurtarma surumunu acar.</div>
+
+
+
   </div>
 </div>
 
-<script>
-let paused = false;
-let t;
 
-function p(){ paused = true; clearTimeout(t); }
-function r(){ t = setTimeout(() => { paused = false; }, 3000); }
-function send(path){ fetch(path).then(() => pull(false)); }
+<script>
+let paused = false; let t;
+const inps = ["lInt","onD","offD","stb","div","thb","thc","thd","the"];
+const keys = ["lInt","onD","offD","stable","div","thb","thc","thd","the"];
+
+function p(){ paused=true; clearTimeout(t); }
+function r(){ t=setTimeout(()=>{paused=false;},3000); }
+function send(path){ fetch(path).then(_=>pull(false)); }
 function num(v, fallback = 0){
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -1114,11 +1018,15 @@ function setInput(id, value, force){
   const el = document.getElementById(id);
   if(el && (document.activeElement !== el || force)) el.value = value;
 }
+
 function fmtTime(sec){
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+  const m = Math.floor(sec/60);
+  const s = sec%60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return mm + ":" + ss;
 }
+
 function fmtOtaAge(ms){
   const sec = Math.max(0, Math.round((Number(ms) || 0) / 1000));
   if(sec === 0) return "hemen simdi";
@@ -1127,62 +1035,96 @@ function fmtOtaAge(ms){
   const rem = sec % 60;
   return min + " dk " + rem + " sn once";
 }
+
 function runOtaCheckAdmin(){
   fetch('/ota_check', {cache:'no-store'}).then(() => {
     document.getElementById('otaStatus').textContent = 'check_requested';
   });
 }
+
+function runBootFactory(){
+  if(!confirm('Factory surume donup cihaz yeniden baslatilsin mi?')) return;
+  fetch('/boot_factory', {cache:'no-store'})
+    .then(r => r.text().then(t => ({ok:r.ok, text:t})))
+    .then(x => {
+      if(!x.ok) throw new Error(x.text || 'Factory gecisi basarisiz');
+      alert(x.text || 'Factory secildi, cihaz yeniden baslatiliyor.');
+    })
+    .catch(e => alert(e.message || 'Factory gecisi basarisiz'));
+}
+
+function runBootPrev(){
+  if(!confirm('Aktif olmayan OTA slotu secilip cihaz yeniden baslatilsin mi?')) return;
+  fetch('/boot_prev', {cache:'no-store'})
+    .then(r => r.text().then(t => ({ok:r.ok, text:t})))
+    .then(x => {
+      if(!x.ok) throw new Error(x.text || 'Onceki OTA gecisi basarisiz');
+      alert(x.text || 'Diger OTA slotu secildi, cihaz yeniden baslatiliyor.');
+    })
+    .catch(e => alert(e.message || 'Onceki OTA gecisi basarisiz'));
+}
+
 function fillClampLow(){
-  const ref = num(document.getElementById('clampLow').value, 0);
-  if(ref <= 0){
-    alert('Pens referans akimini gir.');
-    return;
-  }
+  let changed = 0;
   ['A','B','C'].forEach(ph => {
+    const ref = num(document.getElementById('clampLow' + ph).value, 0);
     const live = num(document.getElementById('liveI' + ph).textContent, 0);
     const currentCal = num(document.getElementById('ical' + ph).value, 12);
-    if(live > 0.2){
+    if(ref > 0 && live > 0.2){
       document.getElementById('ical' + ph).value = (currentCal * (ref / live)).toFixed(2);
+      changed++;
     }
   });
-  alert('Ical alanlari pens referansina gore dolduruldu.');
-}
-function fillClampMid(){
-  const ref = num(document.getElementById('clampMid').value, 0);
-  const live = num(document.getElementById('liveIAvg').textContent, 0);
-  if(ref <= 0 || live <= 0){
-    alert('Pens ve canli akim degeri gerekli.');
+  if(!changed){
+    alert('Pens A/B/C referanslarindan en az birini gir ve canli akim gelsin.');
     return;
   }
-  document.getElementById('rngMidOff').value = (ref - live).toFixed(2);
-  alert('10-30A offset alani dolduruldu.');
+  alert('Ical A/B/C alanlari pens faz degerlerine gore dolduruldu.');
 }
+
+function fillClampMid(){
+  let changed = 0;
+  ['A','B','C'].forEach(ph => {
+    const ref = num(document.getElementById('clampMid' + ph).value, 0);
+    const live = num(document.getElementById('liveI' + ph).textContent, 0);
+    if(ref > 0 && live > 0){
+      document.getElementById('ioff' + ph).value = (ref - live).toFixed(2);
+      changed++;
+    }
+  });
+  if(!changed){
+    alert('Pens A/B/C referanslarindan en az birini gir ve canli akim gelsin.');
+    return;
+  }
+  alert('Offset A/B/C alanlari pens faz degerlerine gore dolduruldu.');
+}
+
 function pull(force=false){
   if(paused && !force) return;
-  fetch('/status', {cache:'no-store'}).then(r => r.json()).then(d => {
+  fetch('/status', {cache:'no-store'}).then(r=>r.json()).then(d=>{
     document.getElementById('sStb').textContent = d.state;
     document.getElementById('sRaw').textContent = d.stateRaw;
-    document.getElementById('cH').textContent = num(d.cpHigh).toFixed(2) + 'V';
-    document.getElementById('cL').textContent = num(d.cpLow).toFixed(2) + 'V';
-    document.getElementById('aH').textContent = num(d.adcHigh).toFixed(3) + 'V';
-    document.getElementById('aL').textContent = num(d.adcLow).toFixed(3) + 'V';
-    document.getElementById('i1').textContent = num(d.ia).toFixed(2);
-    document.getElementById('i2').textContent = num(d.ib).toFixed(2);
-    document.getElementById('i3').textContent = num(d.ic).toFixed(2);
-    document.getElementById('pwr').textContent = (num(d.pW) / 1000.0).toFixed(2);
-    document.getElementById('ekwh').textContent = num(d.eKWh).toFixed(3);
-    document.getElementById('tsec').textContent = fmtTime(num(d.tSec, 0));
-    document.getElementById('phase').textContent = num(d.phase, 1) + 'F';
-    document.getElementById('wifiSsid').textContent = d.wifiSsid || '-';
-    document.getElementById('wifiLoc').textContent = d.wifiLoc || '-';
-    document.getElementById('ip').textContent = d.ip || '-';
-    document.getElementById('host').textContent = d.host || '-';
-    document.getElementById('rLbl').textContent = d.rLbl || '-';
-    document.getElementById('rstTotal').textContent = d.rstTotal || 0;
-    document.getElementById('rstNow').textContent = d.rstNow || 0;
-    document.getElementById('rstHist').textContent = d.rstHist || 0;
-    document.getElementById('rstLastMode').textContent = d.rstLastMode || 'YOK';
-    document.getElementById('rstLastSec').textContent = d.rstLastSec || 0;
+    document.getElementById('cH').textContent = d.cpHigh.toFixed(2)+"V";
+    document.getElementById('cL').textContent = d.cpLow.toFixed(2)+"V";
+    document.getElementById('aH').textContent = d.adcHigh.toFixed(3)+"V";
+    document.getElementById('aL').textContent = d.adcLow.toFixed(3)+"V";
+    if(d.ia !== undefined) document.getElementById('i1').textContent = d.ia.toFixed(2);
+    if(d.ib !== undefined) document.getElementById('i2').textContent = d.ib.toFixed(2);
+    if(d.ic !== undefined) document.getElementById('i3').textContent = d.ic.toFixed(2);
+    if(d.pW !== undefined) document.getElementById('pwr').textContent = (d.pW/1000.0).toFixed(2);
+    if(d.eKWh !== undefined) document.getElementById('ekwh').textContent = d.eKWh.toFixed(3);
+    if(d.tSec !== undefined) document.getElementById('tsec').textContent = fmtTime(d.tSec);
+    if(d.phase !== undefined) document.getElementById('phase').textContent = d.phase + "F";
+    if(d.wifiSsid !== undefined) document.getElementById('wifiSsid').textContent = d.wifiSsid;
+    if(d.wifiLoc !== undefined) document.getElementById('wifiLoc').textContent = d.wifiLoc;
+    if(d.ip !== undefined) document.getElementById('ip').textContent = d.ip;
+    if(d.host !== undefined) document.getElementById('host').textContent = d.host;
+    if(d.rLbl !== undefined) document.getElementById('rLbl').textContent = d.rLbl;
+    if(d.rstTotal !== undefined) document.getElementById('rstTotal').textContent = d.rstTotal;
+    if(d.rstNow !== undefined) document.getElementById('rstNow').textContent = d.rstNow;
+    if(d.rstHist !== undefined) document.getElementById('rstHist').textContent = d.rstHist;
+    if(d.rstLastMode !== undefined) document.getElementById('rstLastMode').textContent = d.rstLastMode;
+    if(d.rstLastSec !== undefined) document.getElementById('rstLastSec').textContent = d.rstLastSec;
     document.getElementById('otaCurVer').textContent = d.otaCur || '-';
     document.getElementById('otaRemoteVer').textContent = d.otaRemote || '-';
     document.getElementById('otaPart').textContent = d.otaPart || '-';
@@ -1190,25 +1132,35 @@ function pull(force=false){
     document.getElementById('otaStatus').textContent = d.otaStatus || '-';
     document.getElementById('otaAge').textContent = fmtOtaAge(d.otaAgeMs);
     document.getElementById('otaError').textContent = (d.otaErr && d.otaErr.length) ? d.otaErr : 'Hata yok';
-    document.getElementById('badgeState').textContent = 'STATE:' + (d.state || '-');
+    const liveA = num(d.ia);
+    const liveB = num(d.ib);
+    const liveC = num(d.ic);
+    document.getElementById('liveIa').textContent = liveA.toFixed(2);
+    document.getElementById('liveIb').textContent = liveB.toFixed(2);
+    document.getElementById('liveIc').textContent = liveC.toFixed(2);
+    const liveVals = [liveA, liveB, liveC].filter(v => v > 0.1);
+    const liveAvg = liveVals.length ? (liveVals.reduce((sum, v) => sum + v, 0) / liveVals.length) : 0;
+    document.getElementById('liveIAvg').textContent = liveAvg.toFixed(2);
+
+    // Ust rozetler
+    const st = (d.state || "-");
+    document.getElementById('badgeState').textContent = "STATE:" + st;
+
     const relayBadge = document.getElementById('badgeRelay');
-    relayBadge.textContent = 'R: ' + (d.rLbl || '-');
-    relayBadge.style.backgroundColor = (d.state === 'C') ? 'rgba(0,255,170,0.3)' : '';
+    const rtxt = d.rLbl ? d.rLbl : "-";
+    relayBadge.textContent = "R: " + rtxt;
 
-    document.getElementById('liveIa').textContent = num(d.ia).toFixed(2);
-    document.getElementById('liveIb').textContent = num(d.ib).toFixed(2);
-    document.getElementById('liveIc').textContent = num(d.ic).toFixed(2);
-    document.getElementById('liveIAvg').textContent = num(d.iAvg).toFixed(2);
+    // Sarjdayken kablo parlasin
+    if(d.state === "C") {
+      relayBadge.style.backgroundColor = "rgba(0,255,170,0.3)";
+    } else {
+      relayBadge.style.backgroundColor = "";
+    }
 
-    setInput('lInt', d.lInt, force);
-    setInput('onD', d.onD, force);
-    setInput('offD', d.offD, force);
-    setInput('stb', d.stable, force);
-    setInput('div', d.div, force);
-    setInput('thb', d.thb, force);
-    setInput('thc', d.thc, force);
-    setInput('thd', d.thd, force);
-    setInput('the', d.the, force);
+    inps.forEach((id, i) => {
+      let el = document.getElementById(id);
+      if(el && (document.activeElement !== el || force)) el.value = d[keys[i]];
+    });
     setInput('icalA', d.icalA, force);
     setInput('icalB', d.icalB, force);
     setInput('icalC', d.icalC, force);
@@ -1221,17 +1173,10 @@ function pull(force=false){
     setInput('rngMidOff', d.rngMidOff, force);
   });
 }
+
 function applyCal(){
   const q = new URLSearchParams();
-  q.append('lInt', document.getElementById('lInt').value);
-  q.append('onD', document.getElementById('onD').value);
-  q.append('offD', document.getElementById('offD').value);
-  q.append('s', document.getElementById('stb').value);
-  q.append('div', document.getElementById('div').value);
-  q.append('thb', document.getElementById('thb').value);
-  q.append('thc', document.getElementById('thc').value);
-  q.append('thd', document.getElementById('thd').value);
-  q.append('the', document.getElementById('the').value);
+  inps.forEach((id, i) => q.append(keys[i]==="stable"?"s":keys[i], document.getElementById(id).value));
   q.append('icalA', document.getElementById('icalA').value);
   q.append('icalB', document.getElementById('icalB').value);
   q.append('icalC', document.getElementById('icalC').value);
@@ -1243,13 +1188,10 @@ function applyCal(){
   q.append('rngLowOff', document.getElementById('rngLowOff').value);
   q.append('rngMidOff', document.getElementById('rngMidOff').value);
   if(document.activeElement) document.activeElement.blur();
-  fetch('/calib_apply?' + q.toString()).then(() => {
-    alert('Tamam');
-    paused = false;
-    pull(true);
-  });
+  fetch('/calib_apply?'+q.toString()).then(_=>{alert("Tamam"); paused=false; pull(true);});
 }
-setInterval(() => pull(false), 2000);
+
+setInterval(()=>pull(false), 2000);
 pull(true);
 </script>
 
@@ -1315,26 +1257,43 @@ static void setupWiFi() {
 
 // 3) HTTP handler'lari.
 // Her endpoint kendi verisini veya komutunu burada uretir.
-static void handleRoot() {
-  noteWebActivity();
-  noteHttpResponseSent();
-  server.send_P(200, "text/html", USER_HTML);
-}
+static void handleRoot() { server.send_P(200, "text/html", USER_HTML); }
 static void handleAdmin() {
-  noteWebActivity();
   if (!requireAdminAuth()) return;
-  noteHttpResponseSent();
   server.send_P(200, "text/html", MAIN_HTML);
 }
-static void handlePing() { noteWebActivity(); noteHttpResponseSent(); server.send(200, "text/plain", "OK"); }
-static void handleManifest() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "application/manifest+json", MANIFEST_JSON); }
-static void handleServiceWorker() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "application/javascript", SERVICE_WORKER_JS); }
-static void handleAppIcon() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "image/svg+xml", APP_ICON_SVG); }
+static void handlePing() { server.send(200, "text/plain", "OK"); }
+static void handleManifest() { server.send_P(200, "application/manifest+json", MANIFEST_JSON); }
+static void handleServiceWorker() { server.send_P(200, "application/javascript", SERVICE_WORKER_JS); }
+static void handleAppIcon() { server.send_P(200, "image/svg+xml", APP_ICON_SVG); }
 static void handleOtaCheck() {
-  noteWebActivity();
   OTA_Manager::triggerCheckNow();
-  noteHttpResponseSent();
   server.send(200, "application/json", "{\"ok\":1}");
+}
+
+static void scheduleDeferredRestart() {
+  s_manualOtaRebootPending = true;
+  s_manualOtaRebootAtMs = millis() + 300;
+}
+
+static void handleBootFactory() {
+  if (!requireAdminAuth()) return;
+  if (!OTA_Manager::selectFactoryBootPartition()) {
+    server.send(500, "text/plain", OTA_Manager::lastErrorText());
+    return;
+  }
+  scheduleDeferredRestart();
+  server.send(200, "text/plain", "Factory secildi, cihaz yeniden baslatiliyor");
+}
+
+static void handleBootPrev() {
+  if (!requireAdminAuth()) return;
+  if (!OTA_Manager::selectAlternateOtaBootPartition()) {
+    server.send(409, "text/plain", OTA_Manager::lastErrorText());
+    return;
+  }
+  scheduleDeferredRestart();
+  server.send(200, "text/plain", "Diger OTA slotu secildi, cihaz yeniden baslatiliyor");
 }
 
 static void failManualOta(const String& reason) {
@@ -1348,7 +1307,6 @@ static void failManualOta(const String& reason) {
 }
 
 static void handleManualUpdatePage() {
-  noteWebActivity();
   if (!requireAdminAuth()) return;
 
   String html;
@@ -1377,13 +1335,10 @@ static void handleManualUpdatePage() {
             "<button type='submit'>BIN YUKLE</button>"
             "</form><p class='muted'><a href='/admin'>Admin panele don</a></p>"
             "</div></body></html>");
-
-  noteHttpResponseSent();
   server.send(200, "text/html", html);
 }
 
 static void handleManualUpdateUpload() {
-  noteWebActivity();
   if (!server.authenticate(kAdminUser, kAdminPassword)) {
     return;
   }
@@ -1450,7 +1405,6 @@ static void handleManualUpdateUpload() {
 }
 
 static void handleManualUpdateResult() {
-  noteWebActivity();
   if (!server.authenticate(kAdminUser, kAdminPassword)) {
     server.requestAuthentication(BASIC_AUTH, "RotosisEVSE Admin", "Sifre gerekli");
     return;
@@ -1484,31 +1438,25 @@ static void handleManualUpdateResult() {
   }
 
   s_manualOta.active = false;
-  noteHttpResponseSent();
   server.send(code, contentType, body);
 }
 
 // Status endpoint'i kullanici panelinin ana veri kaynagidir.
 static void handleStatus() {
-  noteWebActivity();
   auto m = pilot_get();
   uint32_t nowMs = millis();
 
-  float rawIa = safeFinite(current_sensor_get_irms_a());
-  float rawIb = safeFinite(current_sensor_get_irms_b());
-  float rawIc = safeFinite(current_sensor_get_irms_c());
+  float ia = safeFinite(current_sensor_get_irms_a());
+  float ib = safeFinite(current_sensor_get_irms_b());
+  float ic = safeFinite(current_sensor_get_irms_c());
   bool relaySet = relay_get();
   bool chargingState = (m.stateStable == "C" || m.stateStable == "D");
   bool accountingEnabled = relaySet && pwmEnabled && chargingState;
   if (!accountingEnabled) {
-    rawIa = 0.0f;
-    rawIb = 0.0f;
-    rawIc = 0.0f;
+    ia = 0.0f;
+    ib = 0.0f;
+    ic = 0.0f;
   }
-  float ia = 0.0f;
-  float ib = 0.0f;
-  float ic = 0.0f;
-  updateDisplayCurrents(rawIa, rawIb, rawIc, &ia, &ib, &ic);
   float pW = accountingEnabled ? safeFinite(g_powerW) : 0.0f;
   float eKWh = safeFinite(g_energyKWh);
   float cpHigh = safeFinite(m.cpHigh);
@@ -1516,29 +1464,14 @@ static void handleStatus() {
   float adcHigh = safeFinite(m.adcHigh);
   float adcLow = safeFinite(m.adcLow);
   const char* relayLabel = relaySet ? "SET" : "RESET";
-  float iMax = rawIa;
-  if (rawIb > iMax) iMax = rawIb;
-  if (rawIc > iMax) iMax = rawIc;
-  float iAvgSum = 0.0f;
-  int iAvgCount = 0;
-  if (ia > 0.1f) {
-    iAvgSum += ia;
-    iAvgCount++;
-  }
-  if (ib > 0.1f) {
-    iAvgSum += ib;
-    iAvgCount++;
-  }
-  if (ic > 0.1f) {
-    iAvgSum += ic;
-    iAvgCount++;
-  }
-  float iAvg = (iAvgCount > 0) ? (iAvgSum / (float)iAvgCount) : 0.0f;
   float calA = 0.0f, calB = 0.0f, calC = 0.0f;
   float offA = 0.0f, offB = 0.0f, offC = 0.0f;
   float rngLowMax = 0.0f, rngMidMax = 0.0f, rngLowOff = 0.0f, rngMidOff = 0.0f;
   current_sensor_get_calibration(&calA, &calB, &calC, &offA, &offB, &offC);
   current_sensor_get_range_profile(&rngLowMax, &rngMidMax, &rngLowOff, &rngMidOff);
+  float iMax = ia;
+  if (ib > iMax) iMax = ib;
+  if (ic > iMax) iMax = ic;
 
   String wifiSsid = "-";
   String wifiLoc = "-";
@@ -1575,116 +1508,92 @@ static void handleStatus() {
     alarmTxt = "Wi-Fi baglantisi yok";
   }
 
-  String json;
-  json.reserve(2300);
-  json += '{';
-  json += "\"lInt\":" + String(loopIntervalMs);
-  json += ",\"onD\":" + String((unsigned long)relayOnDelayMs);
-  json += ",\"offD\":" + String((unsigned long)relayOffDelayMs);
-  json += ",\"stable\":" + String(stableCount);
-  json += ",\"cpHigh\":" + String(cpHigh, 2);
-  json += ",\"cpLow\":" + String(cpLow, 2);
-  json += ",\"adcHigh\":" + String(adcHigh, 3);
-  json += ",\"adcLow\":" + String(adcLow, 3);
-  appendJsonStringField(json, "stateRaw", m.stateRaw.c_str());
-  json += "\"ia\":" + String(ia, 2);
-  json += ",\"ib\":" + String(ib, 2);
-  json += ",\"ic\":" + String(ic, 2);
-  json += ",\"iAvg\":" + String(iAvg, 2);
-  json += ",\"pW\":" + String(pW, 1);
-  json += ",\"eKWh\":" + String(eKWh, 3);
-  json += ",\"tSec\":" + String((unsigned long)g_chargeSeconds);
-  json += ",\"phase\":" + String(g_phaseCount);
-  json += ',';
-  appendJsonStringField(json, "rLbl", relayLabel);
-  appendJsonStringField(json, "wifiSsid", wifiSsid.c_str());
-  appendJsonStringField(json, "wifiLoc", wifiLoc.c_str());
-  appendJsonStringField(json, "ip", ipStr.c_str());
-  appendJsonStringField(json, "host", hostStr.c_str());
-  appendJsonStringField(json, "state", m.stateStable.c_str());
-  json += "\"div\":" + String(CP_DIVIDER_RATIO, 3);
-  json += ",\"thb\":" + String(TH_B_MIN, 2);
-  json += ",\"thc\":" + String(TH_C_MIN, 2);
-  json += ",\"thd\":" + String(TH_D_MIN, 2);
-  json += ",\"the\":" + String(TH_E_MIN, 2);
-  json += ",\"icalA\":" + String(calA, 2);
-  json += ",\"icalB\":" + String(calB, 2);
-  json += ",\"icalC\":" + String(calC, 2);
-  json += ",\"ioffA\":" + String(offA, 2);
-  json += ",\"ioffB\":" + String(offB, 2);
-  json += ",\"ioffC\":" + String(offC, 2);
-  json += ",\"rngLowMax\":" + String(rngLowMax, 2);
-  json += ",\"rngMidMax\":" + String(rngMidMax, 2);
-  json += ",\"rngLowOff\":" + String(rngLowOff, 2);
-  json += ",\"rngMidOff\":" + String(rngMidOff, 2);
-  json += ",\"modeId\":" + String(g_chargeMode);
-  json += ',';
-  appendJsonStringField(json, "mode", chargeModeLabel(g_chargeMode));
-  json += "\"limitA\":" + String(safeFinite(g_currentLimitA), 1);
-  json += ",\"staOk\":" + String(staOk ? 1 : 0);
-  json += ',';
-  appendJsonStringField(json, "otaCur", otaCurrent);
-  appendJsonStringField(json, "otaRemote", otaRemote);
-  appendJsonStringField(json, "otaPart", otaPart);
-  appendJsonStringField(json, "otaImgState", otaImgState);
-  appendJsonStringField(json, "otaStatus", otaStatus);
-  appendJsonStringField(json, "otaErr", otaError);
-  json += "\"otaAgeMs\":" + String((unsigned long)otaAgeMs);
-  json += ",\"alarmLv\":" + String(alarmLv);
-  json += ',';
-  appendJsonStringField(json, "alarmTxt", alarmTxt);
-  json += "\"sLive\":" + String(g_sessionLive ? 1 : 0);
-  json += ",\"sLiveStart\":" + String((unsigned long)g_sessionLiveStartSec);
-  json += ",\"sLiveSec\":" + String((unsigned long)g_sessionLiveSeconds);
-  json += ",\"sLiveKWh\":" + String(safeFinite(g_sessionLiveEnergyKWh), 3);
-  json += ",\"rstTotal\":" + String((unsigned long)s_resetTotalCount);
-  json += ",\"rstNow\":" + String((unsigned long)s_resetNowCount);
-  json += ",\"rstHist\":" + String((unsigned long)s_resetHistoryCount);
-  json += ",\"rstLastSec\":" + String((unsigned long)s_resetLastSec);
-  json += ',';
-  appendJsonStringField(json, "rstLastMode", resetModeLabel(s_resetLastModeId), false);
-  json += '}';
+  snprintf(
+    s_jsonBuf, sizeof(s_jsonBuf),
+    "{\"lInt\":%d,\"onD\":%lu,\"offD\":%lu,\"stable\":%d,"
+    "\"cpHigh\":%.2f,\"cpLow\":%.2f,\"adcHigh\":%.3f,\"adcLow\":%.3f,"
+    "\"stateRaw\":\"%s\",\"ia\":%.2f,\"ib\":%.2f,\"ic\":%.2f,"
+    "\"pW\":%.1f,\"eKWh\":%.3f,\"tSec\":%lu,\"phase\":%d,\"rLbl\":\"%s\","
+    "\"wifiSsid\":\"%s\",\"wifiLoc\":\"%s\",\"ip\":\"%s\",\"host\":\"%s\","
+    "\"state\":\"%s\",\"div\":%.3f,\"thb\":%.2f,\"thc\":%.2f,\"thd\":%.2f,\"the\":%.2f,"
+    "\"icalA\":%.2f,\"icalB\":%.2f,\"icalC\":%.2f,\"ioffA\":%.2f,\"ioffB\":%.2f,\"ioffC\":%.2f,"
+    "\"rngLowMax\":%.2f,\"rngMidMax\":%.2f,\"rngLowOff\":%.2f,\"rngMidOff\":%.2f,"
+    "\"otaCur\":\"%s\",\"otaRemote\":\"%s\",\"otaPart\":\"%s\",\"otaImgState\":\"%s\",\"otaStatus\":\"%s\",\"otaAgeMs\":%lu,\"otaErr\":\"%s\","
+    "\"modeId\":%d,\"mode\":\"%s\",\"limitA\":%.1f,\"staOk\":%d,"
+    "\"alarmLv\":%d,\"alarmTxt\":\"%s\","
+    "\"sLive\":%d,\"sLiveStart\":%lu,\"sLiveSec\":%lu,\"sLiveKWh\":%.3f,"
+    "\"rstTotal\":%lu,\"rstNow\":%lu,\"rstHist\":%lu,\"rstLastSec\":%lu,\"rstLastMode\":\"%s\"}",
+    loopIntervalMs,
+    (unsigned long)relayOnDelayMs,
+    (unsigned long)relayOffDelayMs,
+    stableCount,
+    cpHigh, cpLow, adcHigh, adcLow,
+    m.stateRaw.c_str(),
+    ia, ib, ic,
+    pW, eKWh,
+    (unsigned long)g_chargeSeconds,
+    g_phaseCount,
+    relayLabel,
+    wifiSsid.c_str(),
+    wifiLoc.c_str(),
+    ipStr.c_str(),
+    hostStr.c_str(),
+    m.stateStable.c_str(),
+    CP_DIVIDER_RATIO,
+    TH_B_MIN, TH_C_MIN, TH_D_MIN, TH_E_MIN,
+    calA, calB, calC, offA, offB, offC,
+    rngLowMax, rngMidMax, rngLowOff, rngMidOff,
+    otaCurrent, otaRemote, otaPart, otaImgState, otaStatus, (unsigned long)otaAgeMs, otaError,
+    g_chargeMode,
+    chargeModeLabel(g_chargeMode),
+    safeFinite(g_currentLimitA),
+    staOk ? 1 : 0,
+    alarmLv,
+    alarmTxt,
+    g_sessionLive ? 1 : 0,
+    (unsigned long)g_sessionLiveStartSec,
+    (unsigned long)g_sessionLiveSeconds,
+    safeFinite(g_sessionLiveEnergyKWh),
+    (unsigned long)s_resetTotalCount,
+    (unsigned long)s_resetNowCount,
+    (unsigned long)s_resetHistoryCount,
+    (unsigned long)s_resetLastSec,
+    resetModeLabel(s_resetLastModeId)
+  );
 
-  server.send(200, "application/json", json);
-  noteHttpResponseSent();
+  server.send(200, "application/json", s_jsonBuf);
 }
 
 // Gecmis seanslar icin ayri JSON endpoint.
 static void handleHistory() {
-  noteWebActivity();
-  String json;
-  json.reserve(1200);
-  json += F("{\"count\":");
-  json += String(g_histCount);
-  json += F(",\"active\":{\"on\":");
-  json += String(g_sessionLive ? 1 : 0);
-  json += F(",\"start\":");
-  json += String((unsigned long)g_sessionLiveStartSec);
-  json += F(",\"sec\":");
-  json += String((unsigned long)g_sessionLiveSeconds);
-  json += F(",\"kWh\":");
-  json += String(safeFinite(g_sessionLiveEnergyKWh), 3);
-  json += F("},\"items\":[");
+  char json[4096];
+  int n = 0;
+  n += snprintf(
+    json + n, sizeof(json) - n,
+    "{\"count\":%d,\"active\":{\"on\":%d,\"start\":%lu,\"sec\":%lu,\"kWh\":%.3f},\"items\":[",
+    g_histCount,
+    g_sessionLive ? 1 : 0,
+    (unsigned long)g_sessionLiveStartSec,
+    (unsigned long)g_sessionLiveSeconds,
+    safeFinite(g_sessionLiveEnergyKWh)
+  );
 
   int start = (g_histCount < 20) ? 0 : g_histHead;
-  for (int i = 0; i < g_histCount; i++) {
+  for (int i = 0; i < g_histCount && n < (int)sizeof(json) - 2; i++) {
     int idx = (start + i) % 20;
-    if (i > 0) json += ',';
-    json += F("{\"s\":");
-    json += String((unsigned long)g_histStartSec[idx]);
-    json += F(",\"d\":");
-    json += String((unsigned long)g_histDurationSec[idx]);
-    json += F(",\"e\":");
-    json += String(safeFinite(g_histEnergyKWh[idx]), 3);
-    json += F(",\"p\":");
-    json += String(safeFinite(g_histAvgPowerW[idx]), 1);
-    json += F(",\"ph\":");
-    json += String((unsigned)g_histPhaseCount[idx]);
-    json += '}';
+    n += snprintf(
+      json + n, sizeof(json) - n,
+      "%s{\"s\":%lu,\"d\":%lu,\"e\":%.3f,\"p\":%.1f,\"ph\":%u}",
+      (i == 0) ? "" : ",",
+      (unsigned long)g_histStartSec[idx],
+      (unsigned long)g_histDurationSec[idx],
+      safeFinite(g_histEnergyKWh[idx]),
+      safeFinite(g_histAvgPowerW[idx]),
+      (unsigned)g_histPhaseCount[idx]
+    );
   }
-  json += F("]}");
+  snprintf(json + n, sizeof(json) - n, "]}");
   server.send(200, "application/json", json);
-  noteHttpResponseSent();
 }
 
 // Kullanici panelindeki AUTO / START / STOP komutu burada islenir.
@@ -1711,7 +1620,6 @@ static void handleChargeCmd() {
   }
 
   server.send(200, "text/plain", "OK");
-  noteHttpResponseSent();
 }
 
 // Enerji ve gecmis sifirlama endpoint'i.
@@ -1739,7 +1647,6 @@ static void handleDataReset() {
     clearHistory ? 1 : 0
   );
   server.send(200, "application/json", json);
-  noteHttpResponseSent();
 }
 
 // Web admin panelinden gelen CP / relay / timing ayarlari burada uygulanir.
@@ -1810,33 +1717,28 @@ static void handleCalibApply() {
   current_sensor_set_calibration(calA, calB, calC, offA, offB, offC);
   current_sensor_set_range_profile(rngLowMax, rngMidMax, rngLowOff, rngMidOff);
   server.send(200, "text/plain", "OK");
-  noteHttpResponseSent();
 }
 
 static void handleRelay() {
   if (server.hasArg("on")) relay_set(server.arg("on") == "1");
   server.send(200, "text/plain", "OK");
-  noteHttpResponseSent();
 }
 
 static void handleRelayAuto() {
   if (server.hasArg("en")) relay_set_auto_enabled(server.arg("en") == "1");
   server.send(200, "text/plain", "OK");
-  noteHttpResponseSent();
 }
 
 static void handlePulseReset() {
   if (!requireAdminAuth()) return;
   pulseGpio(MOSFET_RESET_PIN);
   server.send(200, "text/plain", "OK");
-  noteHttpResponseSent();
 }
 
 static void handlePulseSet() {
   if (!requireAdminAuth()) return;
   pulseGpio(MOSFET_SET_PIN);
   server.send(200, "text/plain", "OK");
-  noteHttpResponseSent();
 }
 
 
@@ -1866,6 +1768,8 @@ void web_init() {
   server.on("/sw.js", HTTP_GET, handleServiceWorker);
   server.on("/app-icon.svg", HTTP_GET, handleAppIcon);
   server.on("/ota_check", HTTP_GET, handleOtaCheck);
+  server.on("/boot_factory", HTTP_GET, handleBootFactory);
+  server.on("/boot_prev", HTTP_GET, handleBootPrev);
   // Captive portal probe endpoints (Android/iOS/Windows)
   server.on("/generate_204", HTTP_GET, handleRoot);
   server.on("/hotspot-detect.html", HTTP_GET, handleRoot);
@@ -1881,15 +1785,17 @@ void web_init() {
   server.on("/pulse_set", HTTP_GET, handlePulseSet);
   server.onNotFound(handleRoot);
   server.begin();
+  s_serverStarted = true;
 }
 
 void web_loop() {
   // Arka plan servisleri her loop'ta buradan yurutulur.
+  s_lastWebLoopMs = millis();
   server.handleClient();
 
   if (s_manualOtaRebootPending && (int32_t)(millis() - s_manualOtaRebootAtMs) >= 0) {
     s_manualOtaRebootPending = false;
-    Serial.println("[OTA] Manual upload sonrasi yeniden baslatiliyor");
+    Serial.println("[BOOTCTL] Web komutu sonrasi yeniden baslatiliyor");
     delay(100);
     ESP.restart();
   }
@@ -1931,7 +1837,7 @@ void web_loop() {
 
 bool web_ready_for_ota_validation() {
   bool staOk = (WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0);
-  if (!staOk) return false;
-  if (s_successfulHttpResponses == 0) return false;
-  return s_lastHttpRequestMs != 0;
+  if (!staOk || !s_serverStarted || s_lastWebLoopMs == 0) return false;
+  return (millis() - s_lastWebLoopMs) < 1500;
 }
+

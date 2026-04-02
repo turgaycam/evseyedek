@@ -205,9 +205,9 @@ void current_sensor_init() {
     apply_calibration();
 
     // Baslangicta anlik gurultu seviyesini yakala.
-    noise_floor_a = emonA.calcIrms(300);
-    noise_floor_b = emonB.calcIrms(300);
-    noise_floor_c = emonC.calcIrms(300);
+    noise_floor_a = emonA.calcIrms(180);
+    noise_floor_b = emonB.calcIrms(180);
+    noise_floor_c = emonC.calcIrms(180);
 }
 
 void current_sensor_loop() {
@@ -216,10 +216,10 @@ void current_sensor_loop() {
     static uint8_t phase_index = 0;
     const uint32_t now = millis();
 
-    if (now - last_read < 280) return;
+    if (now - last_read < 400) return;
     last_read = now;
 
-    const int sampleCount = 500;
+    const int sampleCount = 180;
     if (phase_index == 0) {
         if (s_enA) {
             float raw = emonA.calcIrms(sampleCount);
@@ -258,6 +258,7 @@ void current_sensor_loop() {
         }
     }
 
+    yield();
     phase_index = (phase_index + 1) % 3;
 }
 

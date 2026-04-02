@@ -556,6 +556,9 @@ static bool markRunningAppValid() {
 }
 
 static void handleUpdateCheck() {
+  if (!ctx.checkRequested && ctx.checkIntervalMs == 0) {
+    return;
+  }
   if (!ctx.checkRequested && ctx.checkIntervalMs > 0 && (millis() - ctx.lastCheckMs) < ctx.checkIntervalMs) {
     return;
   }
@@ -599,13 +602,19 @@ static void handleUpdateCheck() {
 }
 
 static void handleRollbackGuard() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY && !ctx.customTrialPending) {
+    ctx.builtinPendingVerify = false;
+    syncPendingVerifyFlag();
+    return;
+  }
   if (!ctx.pendingVerify || ctx.markedValid) return;
   uint32_t now = millis();
   if (now - ctx.bootMs < kVerifyDelayMs) return; // biraz bekle
 
   // Manuel /update akisinda custom trial state yoktur. Bu durumda cihazin
   // kendi web arayuzunu basariyla servis edebilmesi "saglikli boot" icin yeterli.
-  if (!ctx.customTrialPending && web_ready_for_ota_validation()) {
+  if (web_ready_for_ota_validation()) {
     Serial.println("[OTA] Local web healthcheck OK; firmware valid olarak isaretleniyor");
     markRunningAppValid();
     return;
@@ -658,9 +667,11 @@ namespace OTA_Manager {
 void begin(const char* manifestUrl, uint32_t checkIntervalMs, const char* sha1Fingerprint) {
   ctx.manifestUrl = manifestUrl ? manifestUrl : "";
   ctx.checkIntervalMs = checkIntervalMs;
-  ctx.checkRequested = true;
   ctx.sha1Fingerprint = sha1Fingerprint ? sha1Fingerprint : "";
   ctx.bootMs = millis();
+  ctx.lastCheckMs = ctx.bootMs;
+  ctx.deferUntilMs = (checkIntervalMs > 0) ? (ctx.bootMs + checkIntervalMs) : 0;
+  ctx.checkRequested = false;
   ctx.lastUpdateOk = false;
   ctx.markedValid = false;
   ctx.verifyHeartbeatResolved = false;
@@ -676,7 +687,10 @@ void begin(const char* manifestUrl, uint32_t checkIntervalMs, const char* sha1Fi
   const esp_partition_t* running = esp_ota_get_running_partition();
   esp_ota_img_states_t state;
   esp_err_t err = esp_ota_get_state_partition(running, &state);
-  if (err == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY) {
+  if (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) {
+    ctx.builtinPendingVerify = false;
+    syncPendingVerifyFlag();
+  } else if (err == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY) {
     ctx.builtinPendingVerify = true;
     syncPendingVerifyFlag();
     Serial.println("[OTA] Pending verify: rollback penceresi acik");
@@ -701,6 +715,69 @@ void deferPeriodicChecks(uint32_t ms) {
   if ((int32_t)(until - ctx.deferUntilMs) > 0) {
     ctx.deferUntilMs = until;
   }
+}
+
+bool selectFactoryBootPartition() {
+  clearCustomTrialState();
+  const esp_partition_t* factory =
+      esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
+  if (!factory) {
+    ctx.lastStatus = "manual_switch_factory_missing";
+    ctx.lastError = "Factory partition bulunamadi";
+    return false;
+  }
+  esp_err_t err = esp_ota_set_boot_partition(factory);
+  if (err != ESP_OK) {
+    ctx.lastStatus = "manual_switch_factory_failed";
+    ctx.lastError = esp_err_to_name(err);
+    return false;
+  }
+  ctx.builtinPendingVerify = false;
+  syncPendingVerifyFlag();
+  ctx.lastStatus = "manual_switch_factory";
+  ctx.lastError = "";
+  return true;
+}
+
+bool selectAlternateOtaBootPartition() {
+  clearCustomTrialState();
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (!running) {
+    ctx.lastStatus = "manual_switch_alt_missing";
+    ctx.lastError = "Calisan partition bulunamadi";
+    return false;
+  }
+
+  esp_partition_subtype_t targetSubtype;
+  if (running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0) {
+    targetSubtype = ESP_PARTITION_SUBTYPE_APP_OTA_1;
+  } else if (running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1) {
+    targetSubtype = ESP_PARTITION_SUBTYPE_APP_OTA_0;
+  } else {
+    ctx.lastStatus = "manual_switch_alt_unavailable";
+    ctx.lastError = "Factory'den onceki OTA slotuna donus desteklenmiyor";
+    return false;
+  }
+
+  const esp_partition_t* target =
+      esp_partition_find_first(ESP_PARTITION_TYPE_APP, targetSubtype, nullptr);
+  if (!target) {
+    ctx.lastStatus = "manual_switch_alt_missing";
+    ctx.lastError = "Hedef OTA partition bulunamadi";
+    return false;
+  }
+
+  esp_err_t err = esp_ota_set_boot_partition(target);
+  if (err != ESP_OK) {
+    ctx.lastStatus = "manual_switch_alt_failed";
+    ctx.lastError = esp_err_to_name(err);
+    return false;
+  }
+  ctx.builtinPendingVerify = false;
+  syncPendingVerifyFlag();
+  ctx.lastStatus = "manual_switch_alt";
+  ctx.lastError = "";
+  return true;
 }
 
 const char* currentVersion() {
