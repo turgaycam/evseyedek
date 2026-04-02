@@ -7,6 +7,7 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <esp_ota_ops.h>
+#include <ctype.h>
 #include <math.h>
 
 #include "app_config.h"
@@ -104,6 +105,9 @@ static void pulseGpio(uint8_t pin) {
 #ifndef EVSE_WIFI_1_LOC
 #define EVSE_WIFI_1_LOC "Ev"
 #endif
+#ifndef EVSE_WIFI_1_ADDR
+#define EVSE_WIFI_1_ADDR EVSE_WIFI_1_LOC
+#endif
 #ifndef EVSE_WIFI_1_SSID
 #define EVSE_WIFI_1_SSID "FiberHGW_ZTN2TY"
 #endif
@@ -113,6 +117,9 @@ static void pulseGpio(uint8_t pin) {
 
 #ifndef EVSE_WIFI_2_LOC
 #define EVSE_WIFI_2_LOC "Rotosis"
+#endif
+#ifndef EVSE_WIFI_2_ADDR
+#define EVSE_WIFI_2_ADDR EVSE_WIFI_2_LOC
 #endif
 #ifndef EVSE_WIFI_2_SSID
 #define EVSE_WIFI_2_SSID "Rotosis_Ofis"
@@ -124,6 +131,9 @@ static void pulseGpio(uint8_t pin) {
 #ifndef EVSE_WIFI_3_LOC
 #define EVSE_WIFI_3_LOC "Ceylan Robot"
 #endif
+#ifndef EVSE_WIFI_3_ADDR
+#define EVSE_WIFI_3_ADDR EVSE_WIFI_3_LOC
+#endif
 #ifndef EVSE_WIFI_3_SSID
 #define EVSE_WIFI_3_SSID "CEYLAN-ROBOT"
 #endif
@@ -134,6 +144,9 @@ static void pulseGpio(uint8_t pin) {
 #ifndef EVSE_WIFI_4_LOC
 #define EVSE_WIFI_4_LOC "Rotosis Atolye"
 #endif
+#ifndef EVSE_WIFI_4_ADDR
+#define EVSE_WIFI_4_ADDR EVSE_WIFI_4_LOC
+#endif
 #ifndef EVSE_WIFI_4_SSID
 #define EVSE_WIFI_4_SSID "Rotosis_Atolye"
 #endif
@@ -143,6 +156,9 @@ static void pulseGpio(uint8_t pin) {
 
 #ifndef EVSE_WIFI_5_LOC
 #define EVSE_WIFI_5_LOC "Test"
+#endif
+#ifndef EVSE_WIFI_5_ADDR
+#define EVSE_WIFI_5_ADDR EVSE_WIFI_5_LOC
 #endif
 #ifndef EVSE_WIFI_5_SSID
 #define EVSE_WIFI_5_SSID "test"
@@ -157,16 +173,17 @@ static const char* kHostName = EVSE_HOSTNAME;
 
 struct KnownWifi {
   const char* location;
+  const char* address;
   const char* ssid;
   const char* password;
 };
 
 static const KnownWifi kKnownWifis[] = {
-  {EVSE_WIFI_1_LOC, EVSE_WIFI_1_SSID, EVSE_WIFI_1_PASS},
-  {EVSE_WIFI_2_LOC, EVSE_WIFI_2_SSID, EVSE_WIFI_2_PASS},
-  {EVSE_WIFI_3_LOC, EVSE_WIFI_3_SSID, EVSE_WIFI_3_PASS},
-  {EVSE_WIFI_4_LOC, EVSE_WIFI_4_SSID, EVSE_WIFI_4_PASS},
-  {EVSE_WIFI_5_LOC, EVSE_WIFI_5_SSID, EVSE_WIFI_5_PASS}
+  {EVSE_WIFI_1_LOC, EVSE_WIFI_1_ADDR, EVSE_WIFI_1_SSID, EVSE_WIFI_1_PASS},
+  {EVSE_WIFI_2_LOC, EVSE_WIFI_2_ADDR, EVSE_WIFI_2_SSID, EVSE_WIFI_2_PASS},
+  {EVSE_WIFI_3_LOC, EVSE_WIFI_3_ADDR, EVSE_WIFI_3_SSID, EVSE_WIFI_3_PASS},
+  {EVSE_WIFI_4_LOC, EVSE_WIFI_4_ADDR, EVSE_WIFI_4_SSID, EVSE_WIFI_4_PASS},
+  {EVSE_WIFI_5_LOC, EVSE_WIFI_5_ADDR, EVSE_WIFI_5_SSID, EVSE_WIFI_5_PASS}
 };
 
 WiFiMulti wifiMulti;
@@ -261,6 +278,48 @@ static float safeFinite(float v) {
 static const char* wifiLocationForSsid(const String& connectedSsid) {
   for (size_t i = 0; i < (sizeof(kKnownWifis) / sizeof(kKnownWifis[0])); i++) {
     if (connectedSsid == kKnownWifis[i].ssid) return kKnownWifis[i].location;
+  }
+  return "Bilinmiyor";
+}
+
+static String normalizeLocationLabel(const String& rawLabel) {
+  if (rawLabel.length() == 0) return "Bilinmiyor";
+
+  String out;
+  out.reserve(rawLabel.length() + 8);
+
+  auto appendSpace = [&out]() {
+    if (out.length() == 0 || out[out.length() - 1] == ' ') return;
+    out += ' ';
+  };
+
+  for (size_t i = 0; i < rawLabel.length(); ++i) {
+    char c = rawLabel[i];
+    if (c == '_' || c == '-' || c == '/' || c == '\\') {
+      appendSpace();
+      continue;
+    }
+
+    if (i > 0) {
+      char prev = rawLabel[i - 1];
+      bool splitCamelCase =
+          isupper(static_cast<unsigned char>(c)) &&
+          (islower(static_cast<unsigned char>(prev)) || isdigit(static_cast<unsigned char>(prev)));
+      if (splitCamelCase) appendSpace();
+    }
+
+    out += c;
+  }
+
+  out.trim();
+  return out.length() ? out : String("Bilinmiyor");
+}
+
+static String wifiAddressForSsid(const String& connectedSsid) {
+  for (size_t i = 0; i < (sizeof(kKnownWifis) / sizeof(kKnownWifis[0])); i++) {
+    if (connectedSsid == kKnownWifis[i].ssid) {
+      return normalizeLocationLabel(kKnownWifis[i].address);
+    }
   }
   return "Bilinmiyor";
 }
@@ -441,7 +500,7 @@ body.state-E,body.state-F{--accent:#ff8b8b;--accentDeep:#ff6464;--accentSoft:rgb
 
   <div class="headline">
     <div class="dateLine" id="dateLabel">-</div>
-    <div class="locationLine" id="stationLabel">EVSE &#304;stasyonu - DC</div>
+    <div class="locationLine" id="stationLabel">Konum bekleniyor</div>
     <div class="hintLine" id="stateHint">Ara&#231; bekleniyor</div>
   </div>
 
@@ -665,7 +724,9 @@ function pull(){
     const timeSec=(liveSession&&d.sLiveSec!==undefined)?(Number(d.sLiveSec)||0):(Number(d.tSec)||0);
     const activePhases=Math.max(1,[ia,ib,ic].filter(v=>v>0.5).length||phaseCount);
     const displayCurrent=activePhases>1 ? (it/activePhases) : it;
-    const stationBase=(d.wifiLoc&&d.wifiLoc!=="-")?d.wifiLoc:((d.host&&d.host!=="-")?d.host:"EVSE Istasyonu");
+    const stationBase=(d.wifiAddr&&d.wifiAddr!=="-"&&d.wifiAddr!=="Bilinmiyor")
+      ? d.wifiAddr
+      : ((d.wifiLoc&&d.wifiLoc!=="-"&&d.wifiLoc!=="Bilinmiyor") ? d.wifiLoc : "Konum bekleniyor");
     chartCeil=Math.max(6,totalLimit);
     setText('it',displayCurrent.toFixed(1));
     setText('currentMetric',displayCurrent.toFixed(1));
@@ -679,7 +740,7 @@ function pull(){
     setText('limitMetric',limitA.toFixed(1));
     setText('limitMeta',phaseCount+" faz / "+limitA.toFixed(1)+" A limit");
     setText('phaseSummary',phaseCount+" faz • "+loadPct.toFixed(0)+"% doluluk");
-    setText('stationLabel',stationBase+" - DC");
+    setText('stationLabel',stationBase);
     updateChargeAction(Number(d.modeId)||0);
     if(d.rLbl!==undefined) setText('relay',"R:"+d.rLbl);
     if(d.state!==undefined) updateState(d.state);
@@ -687,7 +748,7 @@ function pull(){
     if(d.host!==undefined) setText('host',d.host);
     setGauge(loadPct);
     setText('ts',"Son güncelleme: "+new Date().toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit",second:"2-digit"}));
-    const wifiText=(d.wifiSsid&&d.wifiSsid!=="-") ? ("Wi-Fi: "+d.wifiSsid+((d.wifiLoc&&d.wifiLoc!=="-")?" / "+d.wifiLoc:"")) : "Wi-Fi: bağlı değil";
+    const wifiText=(d.wifiSsid&&d.wifiSsid!=="-") ? ("Wi-Fi: "+d.wifiSsid+((d.wifiAddr&&d.wifiAddr!=="-")?" / "+d.wifiAddr:((d.wifiLoc&&d.wifiLoc!=="-")?" / "+d.wifiLoc:""))) : "Wi-Fi: bağlı değil";
     setText('wifiLine',wifiText);
     renderAlarm(d.alarmLv||0, d.alarmTxt||"Sistem normal", d.state||"A", !!d.staOk);
     updateCar(d);
@@ -1447,6 +1508,7 @@ static void handleStatus() {
 
   String wifiSsid = "-";
   String wifiLoc = "-";
+  String wifiAddr = "-";
   String ipStr = "-";
   String hostStr = String(kHostName) + ".local";
   bool staOk = (WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0);
@@ -1467,7 +1529,8 @@ static void handleStatus() {
   int resetReason = factoryLastResetReason();
   if (staOk) {
     wifiSsid = WiFi.SSID();
-    wifiLoc = wifiLocationForSsid(wifiSsid);
+    wifiLoc = normalizeLocationLabel(wifiLocationForSsid(wifiSsid));
+    wifiAddr = wifiAddressForSsid(wifiSsid);
     ipStr = WiFi.localIP().toString();
   }
 
@@ -1494,7 +1557,7 @@ static void handleStatus() {
     "\"cpHigh\":%.2f,\"cpLow\":%.2f,\"adcHigh\":%.3f,\"adcLow\":%.3f,"
     "\"stateRaw\":\"%s\",\"ia\":%.2f,\"ib\":%.2f,\"ic\":%.2f,"
     "\"pW\":%.1f,\"eKWh\":%.3f,\"tSec\":%lu,\"phase\":%d,\"rLbl\":\"%s\","
-    "\"wifiSsid\":\"%s\",\"wifiLoc\":\"%s\",\"ip\":\"%s\",\"host\":\"%s\","
+    "\"wifiSsid\":\"%s\",\"wifiLoc\":\"%s\",\"wifiAddr\":\"%s\",\"ip\":\"%s\",\"host\":\"%s\","
     "\"state\":\"%s\",\"div\":%.3f,\"thb\":%.2f,\"thc\":%.2f,\"thd\":%.2f,\"the\":%.2f,"
     "\"icalA\":%.2f,\"icalB\":%.2f,\"icalC\":%.2f,\"ioffA\":%.2f,\"ioffB\":%.2f,\"ioffC\":%.2f,"
     "\"rngLowMax\":%.2f,\"rngMidMax\":%.2f,\"rngLowOff\":%.2f,\"rngMidOff\":%.2f,"
@@ -1518,6 +1581,7 @@ static void handleStatus() {
     relayLabel,
     wifiSsid.c_str(),
     wifiLoc.c_str(),
+    wifiAddr.c_str(),
     ipStr.c_str(),
     hostStr.c_str(),
     m.stateStable.c_str(),
