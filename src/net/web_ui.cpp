@@ -58,6 +58,10 @@ extern int g_histCount;
 extern int g_histHead;
 extern void resetChargeData(bool clearHistory);
 extern void resetHistoryData();
+extern int factoryButtonPin();
+extern bool factoryButtonIsPressed();
+extern uint32_t factoryButtonHoldMs();
+extern bool factoryButtonRestartPending();
 
 static void pulseGpio(uint8_t pin) {
   digitalWrite(pin, HIGH);
@@ -1470,6 +1474,10 @@ static void handleStatus() {
   const char* otaStatus = OTA_Manager::lastStatusText();
   const char* otaError = OTA_Manager::lastErrorText();
   uint32_t otaAgeMs = OTA_Manager::lastCheckAgeMs();
+  int bootPin = factoryButtonPin();
+  bool bootPressed = factoryButtonIsPressed();
+  uint32_t bootHoldMs = factoryButtonHoldMs();
+  bool bootPending = factoryButtonRestartPending();
   if (staOk) {
     wifiSsid = WiFi.SSID();
     wifiLoc = wifiLocationForSsid(wifiSsid);
@@ -1507,7 +1515,8 @@ static void handleStatus() {
     "\"modeId\":%d,\"mode\":\"%s\",\"limitA\":%.1f,\"staOk\":%d,"
     "\"alarmLv\":%d,\"alarmTxt\":\"%s\","
     "\"sLive\":%d,\"sLiveStart\":%lu,\"sLiveSec\":%lu,\"sLiveKWh\":%.3f,"
-    "\"rstTotal\":%lu,\"rstNow\":%lu,\"rstHist\":%lu,\"rstLastSec\":%lu,\"rstLastMode\":\"%s\"}",
+    "\"rstTotal\":%lu,\"rstNow\":%lu,\"rstHist\":%lu,\"rstLastSec\":%lu,\"rstLastMode\":\"%s\","
+    "\"bootPin\":%d,\"bootPressed\":%d,\"bootHoldMs\":%lu,\"bootPending\":%d}",
     loopIntervalMs,
     (unsigned long)relayOnDelayMs,
     (unsigned long)relayOffDelayMs,
@@ -1543,7 +1552,11 @@ static void handleStatus() {
     (unsigned long)s_resetNowCount,
     (unsigned long)s_resetHistoryCount,
     (unsigned long)s_resetLastSec,
-    resetModeLabel(s_resetLastModeId)
+    resetModeLabel(s_resetLastModeId),
+    bootPin,
+    bootPressed ? 1 : 0,
+    (unsigned long)bootHoldMs,
+    bootPending ? 1 : 0
   );
 
   server.send(200, "application/json", s_jsonBuf);

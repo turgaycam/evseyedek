@@ -21,6 +21,9 @@ static constexpr uint8_t kMaxConsecutiveWdtResets = 3;
 static constexpr int kForceFactoryPin = 0;             // BOOT butonu (GPIO0)
 static constexpr uint32_t kForceFactoryHoldMs = 10000; // 10 saniye
 static bool sFactoryRestartPending = false;
+static bool sFactoryButtonPressActive = false;
+static bool sFactoryButtonHoldHandled = false;
+static uint32_t sFactoryButtonPressStartMs = 0;
 
 static bool isWdtResetReason(esp_reset_reason_t reason)
 {
@@ -73,27 +76,23 @@ static void handleForceFactoryByButton()
 
 static void pollForceFactoryByButtonRuntime()
 {
-  static bool pressActive = false;
-  static bool holdHandled = false;
-  static uint32_t pressStartMs = 0;
-
   bool pressed = (digitalRead(kForceFactoryPin) == LOW);
   if (!pressed) {
-    pressActive = false;
-    holdHandled = false;
-    pressStartMs = 0;
+    sFactoryButtonPressActive = false;
+    sFactoryButtonHoldHandled = false;
+    sFactoryButtonPressStartMs = 0;
     return;
   }
 
-  if (!pressActive) {
-    pressActive = true;
-    holdHandled = false;
-    pressStartMs = millis();
+  if (!sFactoryButtonPressActive) {
+    sFactoryButtonPressActive = true;
+    sFactoryButtonHoldHandled = false;
+    sFactoryButtonPressStartMs = millis();
     return;
   }
 
-  if (holdHandled || (millis() - pressStartMs) < kForceFactoryHoldMs) return;
-  holdHandled = true;
+  if (sFactoryButtonHoldHandled || (millis() - sFactoryButtonPressStartMs) < kForceFactoryHoldMs) return;
+  sFactoryButtonHoldHandled = true;
 
   const esp_partition_t* running = esp_ota_get_running_partition();
   if (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) {
@@ -124,6 +123,28 @@ static void ensureForceFactoryPinMode()
   if (configured) return;
   pinMode(kForceFactoryPin, INPUT_PULLUP);
   configured = true;
+}
+
+int factoryButtonPin()
+{
+  return kForceFactoryPin;
+}
+
+bool factoryButtonIsPressed()
+{
+  ensureForceFactoryPinMode();
+  return digitalRead(kForceFactoryPin) == LOW;
+}
+
+uint32_t factoryButtonHoldMs()
+{
+  if (!sFactoryButtonPressActive || sFactoryButtonPressStartMs == 0) return 0;
+  return millis() - sFactoryButtonPressStartMs;
+}
+
+bool factoryButtonRestartPending()
+{
+  return sFactoryRestartPending;
 }
 
 static void serviceFactoryButton()
