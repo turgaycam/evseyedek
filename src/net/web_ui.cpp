@@ -584,8 +584,6 @@ body.state-E,body.state-F{--accent:#ff8b8b;--accentDeep:#ff6464;--accentSoft:rgb
 .metricHead svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto;}
 .metricValue{margin-top:10px;font-size:24px;font-weight:800;letter-spacing:-.03em;color:#f0fcf8;}
 .metricValue .unit{font-size:.82em;color:#6fd8b1;}
-.phaseMeta{margin-top:16px;display:flex;justify-content:space-between;gap:10px;font-size:14px;color:#8bb5a6;}
-.phaseMeta span{flex:1;padding:10px 12px;border-radius:16px;background:linear-gradient(180deg,rgba(12,32,50,.58),rgba(8,22,36,.38));border:1px solid rgba(151,210,255,.08);text-align:center}
 .installBtn{display:none;margin-top:14px;width:100%;padding:14px 16px;border-radius:18px;border:1px solid rgba(76,210,166,.16);background:linear-gradient(135deg,rgba(13,40,53,.96),rgba(7,22,31,.9));color:#dcfff2;font-size:14px;font-weight:800;box-shadow:var(--shadowSoft);}
 @keyframes screenEnter{0%{opacity:0;transform:translateY(18px)}100%{opacity:1;transform:translateY(0)}}
 @keyframes fadeLift{0%{opacity:0;transform:translateY(14px)}100%{opacity:1;transform:translateY(0)}}
@@ -695,10 +693,6 @@ body.state-E,body.state-F{--accent:#ff8b8b;--accentDeep:#ff6464;--accentSoft:rgb
         </div>
         <div class="metricValue"><span id="currentMetric">0.0</span> <span class="unit">A</span></div>
       </div>
-    </div>
-    <div class="phaseMeta">
-      <span id="phaseSummary">1 faz</span>
-      <span id="limitMeta">32.0 A limit</span>
     </div>
   </section>
 
@@ -867,10 +861,8 @@ function placeImportance(place){
 }
 function stationSymbolSvg(iconClass){
   return '<svg class="'+iconClass+'" viewBox="0 0 24 24" aria-hidden="true">'+
-    '<path d="M9 5v5"></path>'+
-    '<path d="M15 5v5"></path>'+
-    '<path d="M8 10h8v3a4 4 0 0 1-4 4v3"></path>'+
-    '<path d="M10 20h4"></path>'+
+    '<path d="M12 20.5s6-4.76 6-10.3a6 6 0 1 0-12 0c0 5.54 6 10.3 6 10.3z"></path>'+
+    '<circle cx="12" cy="10.2" r="2.35"></circle>'+
   '</svg>';
 }
 function buildMarkerIcon(kind,isStation){
