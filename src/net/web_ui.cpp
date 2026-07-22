@@ -1316,6 +1316,7 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
     <div class="kv"><div class="k">State (Stable/Raw)</div><div class="v mono"><span id="sStb">-</span> / <span id="sRaw">-</span></div></div>
     <div class="kv"><div class="k">CP High / Low</div><div class="v mono"><span id="cH">-</span> / <span id="cL">-</span></div></div>
     <div class="kv"><div class="k">ADC High / Low</div><div class="v mono"><span id="aH">-</span> / <span id="aL">-</span></div></div>
+    <div class="kv"><div class="k">PP GPIO16</div><div class="v mono"><span id="ppV">-</span> / <span id="ppRaw">-</span></div></div>
     <div class="sep"></div>
     <h2>KULLANICI EKRANI OZEL CSS</h2>
     <div class="small">Buraya yazdigin CSS, kullanici ekranindaki tum elemanlari ezebilir. Ornek: `body{background:#000}` veya `.metricCard{border-radius:36px}`</div>
@@ -1709,6 +1710,8 @@ function pull(force=false){
     document.getElementById('cL').textContent = num(d.cpLow).toFixed(2) + 'V';
     document.getElementById('aH').textContent = num(d.adcHigh).toFixed(3) + 'V';
     document.getElementById('aL').textContent = num(d.adcLow).toFixed(3) + 'V';
+    document.getElementById('ppV').textContent = num(d.ppVolt).toFixed(3) + 'V';
+    document.getElementById('ppRaw').textContent = String(num(d.ppRaw, 0));
     document.getElementById('i1').textContent = num(d.ia).toFixed(2);
     document.getElementById('i2').textContent = num(d.ib).toFixed(2);
     document.getElementById('i3').textContent = num(d.ic).toFixed(2);
@@ -2208,6 +2211,8 @@ static void handleStatus() {
   float cpLow = safeFinite(m.cpLow);
   float adcHigh = safeFinite(m.adcHigh);
   float adcLow = safeFinite(m.adcLow);
+  int ppRaw = analogRead(PP_ADC_PIN);
+  float ppVolt = safeFinite((ppRaw * 3.3f) / 4095.0f);
   const char* relayLabel = relaySet ? "SET" : "RESET";
   float iMax = rawIa;
   if (rawIb > iMax) iMax = rawIb;
@@ -2282,7 +2287,7 @@ static void handleStatus() {
   snprintf(
     s_jsonBuf, sizeof(s_jsonBuf),
     "{\"lInt\":%d,\"onD\":%lu,\"offD\":%lu,\"stable\":%d,"
-    "\"cpHigh\":%.2f,\"cpLow\":%.2f,\"adcHigh\":%.3f,\"adcLow\":%.3f,"
+    "\"cpHigh\":%.2f,\"cpLow\":%.2f,\"adcHigh\":%.3f,\"adcLow\":%.3f,\"ppRaw\":%d,\"ppVolt\":%.3f,"
     "\"stateRaw\":\"%s\",\"ia\":%.2f,\"ib\":%.2f,\"ic\":%.2f,\"iAvg\":%.2f,"
     "\"pW\":%.1f,\"eKWh\":%.3f,\"tSec\":%lu,\"phase\":%d,\"rLbl\":\"%s\","
     "\"wifiSsid\":\"%s\",\"wifiLoc\":\"%s\",\"ip\":\"%s\",\"host\":\"%s\",\"mac\":\"%s\",\"stationCode\":\"%s\",\"stationName\":\"%s\",\"stationAddr\":\"%s\","
@@ -2300,7 +2305,7 @@ static void handleStatus() {
     (unsigned long)relayOnDelayMs,
     (unsigned long)relayOffDelayMs,
     stableCount,
-    cpHigh, cpLow, adcHigh, adcLow,
+    cpHigh, cpLow, adcHigh, adcLow, ppRaw, ppVolt,
     m.stateRaw.c_str(),
     ia, ib, ic, iAvg,
     pW, eKWh,

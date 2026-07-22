@@ -1,6 +1,6 @@
 {
-    "version": "1.1.58",
-    "url": "https://raw.githubusercontent.com/RotosisRobotics/RotosisEVSE/main/firmware/uzaktanotali.bin",
-    "size": 1123984,
-    "sha256": "a2b27c4dac1380d22e1e3b05d59310e569ae48914c1e4d287e4fa039c835673b"
+    "version": "1.1.59",
+    "url": "https://raw.githubusercontent.com/turgaycam/evseyedek/backup-new-board-ota/firmware/uzaktanotali.bin",
+    "size": 1127024,
+    "sha256": "52d2bfe7179ec6f58472f2f8706d994f22b255771dc10b5e2e0b25dcf89fda14"
 }

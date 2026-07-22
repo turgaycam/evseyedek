@@ -11,12 +11,12 @@
 // CP / kontaktor / guc elektroniigi hatlari.
 #define CP_PWM_PIN       2
 #define CP_ADC_PIN       1
+#define PP_ADC_PIN       16
 #define RELAY_PIN        4
 
 // 3 faz akim sensor girisleri.
-// Yeni kartta akim sensor pinleri henuz kesinlesmedi; GPIO4 kontaktor oldugu icin
-// gecici olarak akim okuma devre disi.
-#define CURRENT_SENSORS_ENABLED 0
+// Yeni kart: L1/L2/L3 akim sensorleri.
+#define CURRENT_SENSORS_ENABLED 1
 #define CURRENT_SENSOR_PIN_A 5
 #define CURRENT_SENSOR_PIN_B 6
 #define CURRENT_SENSOR_PIN_C 7

@@ -14,9 +14,9 @@
 #include "OTA_Manager.h"
 
 static constexpr char kOtaManifestUrl[] =
-  "https://raw.githubusercontent.com/RotosisRobotics/RotosisEVSE/main/version.json";
+  "https://raw.githubusercontent.com/turgaycam/evseyedek/backup-new-board-ota/version.json";
 static constexpr char kGitHubFingerprint[] = "";
-static constexpr uint32_t kOtaAutoCheckIntervalMs = 60UL * 60UL * 1000UL;
+static constexpr uint32_t kOtaAutoCheckIntervalMs = 10UL * 60UL * 1000UL;
 static constexpr uint8_t kMaxConsecutiveWdtResets = 3;
 static constexpr uint8_t kQuickResetFactoryThreshold = 5;
 static constexpr uint32_t kQuickResetClearAfterMs = 30000;
@@ -410,6 +410,7 @@ void setup()
   pinMode(STATE_LED_PIN, OUTPUT);
   pinMode(WIFI_LED_PIN, OUTPUT);
   pinMode(ERROR_LED_PIN, OUTPUT);
+  pinMode(PP_ADC_PIN, INPUT);
   digitalWrite(STATE_LED_PIN, LOW);
   digitalWrite(WIFI_LED_PIN, LOW);
   digitalWrite(ERROR_LED_PIN, LOW);
