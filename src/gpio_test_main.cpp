@@ -25,7 +25,7 @@ void setup() {
   delay(300);
   Serial.println();
   Serial.println("GPIO LED TEST START");
-  Serial.println("Pins: GPIO8, GPIO17, GPIO18");
+  Serial.println("Pins: STATE GPIO13, WIFI GPIO14, ERROR GPIO12");
   Serial.println("Pattern: each LED ON/OFF in sequence");
 
   for (uint8_t pin : kLedPins) {

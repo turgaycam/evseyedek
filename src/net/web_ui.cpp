@@ -1428,14 +1428,6 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
       <button onclick="send('/relay_auto?en=1')">AUTO AC</button>
     </div>
     <div class="small">Not: Manuel komut auto akisina aninda mudahale eder.</div>
-    <div class="sep"></div>
-
-    <h2>MOSFET TEST</h2>
-    <div class="btns">
-      <button class="danger" onclick="send('/pulse_reset')">RESET (GPIO 7)</button>
-      <button class="primary" onclick="send('/pulse_set')">SET (GPIO 15)</button>
-    </div>
-    <div class="small">Not: 100ms HIGH darbe yollar.</div>
   </div>
 
   <div class="card pageSection" id="otaCard">
@@ -2594,17 +2586,27 @@ static void handleRelayAuto() {
 }
 
 static void handlePulseReset() {
+#if RELAY_USE_LATCH_PINS
   if (!requireAdminAuth()) return;
   pulseGpio(MOSFET_RESET_PIN);
   server.send(200, "text/plain", "OK");
   noteHttpResponseSent();
+#else
+  server.send(404, "text/plain", "Latch cikislari bu kartta devre disi");
+  noteHttpResponseSent();
+#endif
 }
 
 static void handlePulseSet() {
+#if RELAY_USE_LATCH_PINS
   if (!requireAdminAuth()) return;
   pulseGpio(MOSFET_SET_PIN);
   server.send(200, "text/plain", "OK");
   noteHttpResponseSent();
+#else
+  server.send(404, "text/plain", "Latch cikislari bu kartta devre disi");
+  noteHttpResponseSent();
+#endif
 }
 
 
@@ -2624,10 +2626,12 @@ void web_init() {
   loadUserScreenCssSetting();
   setupWiFi();
   setupArduinoOta();
+#if RELAY_USE_LATCH_PINS
   pinMode(MOSFET_RESET_PIN, OUTPUT);
   pinMode(MOSFET_SET_PIN, OUTPUT);
   digitalWrite(MOSFET_RESET_PIN, LOW);
   digitalWrite(MOSFET_SET_PIN, LOW);
+#endif
   // HTTP route kayitlari.
   server.on("/", HTTP_GET, handleRoot);
   server.on("/admin", HTTP_GET, handleAdmin);
@@ -2658,8 +2662,10 @@ void web_init() {
   server.on("/calib_apply", HTTP_GET, handleCalibApply);
   server.on("/relay", HTTP_GET, handleRelay);
   server.on("/relay_auto", HTTP_GET, handleRelayAuto);
+#if RELAY_USE_LATCH_PINS
   server.on("/pulse_reset", HTTP_GET, handlePulseReset);
   server.on("/pulse_set", HTTP_GET, handlePulseSet);
+#endif
   server.onNotFound(handleRoot);
   s_serverStarted = false;
   ensureServerStarted();

@@ -71,9 +71,11 @@ struct CalStore {
 };
 
 static void apply_calibration() {
+#if CURRENT_SENSORS_ENABLED
     emonA.current(CURRENT_SENSOR_PIN_A, s_calA);
     emonB.current(CURRENT_SENSOR_PIN_B, s_calB);
     emonC.current(CURRENT_SENSOR_PIN_C, s_calC);
+#endif
 }
 
 static void save_calibration_nvs() {
@@ -189,6 +191,14 @@ static float apply_phase_filter(float raw, float* noise_floor, bool* phase_activ
 }
 
 void current_sensor_init() {
+#if !CURRENT_SENSORS_ENABLED
+    last_irms_a = 0.0f;
+    last_irms_b = 0.0f;
+    last_irms_c = 0.0f;
+    Serial.println("[CURRENT] Akim sensor pinleri yeni kart icin beklemede; okuma devre disi");
+    return;
+#endif
+
     // ADC Ayarlari
     analogReadResolution(12);       // ESP32-S3 icin 12-bit (0-4095)
     analogSetAttenuation(ADC_11db); // 3.3V giris araligi icin
@@ -211,6 +221,10 @@ void current_sensor_init() {
 }
 
 void current_sensor_loop() {
+#if !CURRENT_SENSORS_ENABLED
+    return;
+#endif
+
     // Her turda tek faz okunur; web arayuzunu bloklamamak icin dagitilmis olcum kullanilir.
     static uint32_t last_read = 0;
     static uint8_t phase_index = 0;

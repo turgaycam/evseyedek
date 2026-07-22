@@ -428,7 +428,7 @@ void setup()
   // Role
   relay_init();
   relay_set_auto_enabled(true);
-  relay_set_min_switch_ms(100);   // C<->B testleri için
+  relay_set_min_switch_ms(0);     // Yeni kartta kontaktor cikisi gecikmesiz seviye surulur.
 
   // Test dirençleri
 
@@ -577,13 +577,19 @@ void loop()
   // OLED ekrani burada sadece okunabilir son verilerle beslenir.
   oled_draw(m.stateStable, ia, ib, ic, powerW, energyKWh, chargeSeconds, relaySet, staOk, cableConnected);
   // LED map:
-  // - STATE_LED_PIN (GPIO8): C'de normal blink, D'de cift flash
-  // - WIFI_LED_PIN  (GPIO17): Wi-Fi bagliyken ON
-  // - ERROR_LED_PIN (GPIO18): state E/F iken ON
+  // - STATE_LED_PIN: C'de normal blink, D'de cift flash
+  // - WIFI_LED_PIN: Wi-Fi bagliyken blink
+  // - ERROR_LED_PIN: state E/F iken ON
   static uint32_t ledTickMs = 0;
   static bool ledPhase = false;
-  const uint32_t ledBlinkMs = 200;
+  static bool lastStaOkForLed = false;
+  const uint32_t ledBlinkMs = staOk ? 1000 : 150;
   uint32_t ledNowMs = millis();
+  if (staOk != lastStaOkForLed) {
+    ledTickMs = ledNowMs;
+    ledPhase = true;
+    lastStaOkForLed = staOk;
+  }
   if (ledNowMs - ledTickMs >= ledBlinkMs) {
     ledTickMs = ledNowMs;
     ledPhase = !ledPhase;
@@ -599,7 +605,7 @@ void loop()
   bool manualStopAlertOn = (g_manualStopAlertUntilMs != 0 && ((int32_t)(g_manualStopAlertUntilMs - ledNowMs) > 0));
   bool errorOn = (m.stateStable == "E" || m.stateStable == "F" || manualStopAlertOn);
   digitalWrite(STATE_LED_PIN, stateBlink ? HIGH : LOW);
-  digitalWrite(WIFI_LED_PIN, staOk ? HIGH : LOW);
+  digitalWrite(WIFI_LED_PIN, ledPhase ? HIGH : LOW);
   digitalWrite(ERROR_LED_PIN, errorOn ? HIGH : LOW);
 
   // Manuel stop 60 saniye sonra otomatik AUTO moduna donsün.

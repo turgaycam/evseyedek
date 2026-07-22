@@ -5,33 +5,37 @@
 // Yeni karta gectiginde ilk bakman gereken dosya budur.
 
 // OLED (I2C: Wire.begin(SDA, SCL))
-#define OLED_SDA 14
-#define OLED_SCL 13
+#define OLED_SDA 18
+#define OLED_SCL 17
 
-// CP / role / guc elektroniigi hatlari.
+// CP / kontaktor / guc elektroniigi hatlari.
 #define CP_PWM_PIN       2
 #define CP_ADC_PIN       1
-#define RELAY_PIN        3
+#define RELAY_PIN        4
 
 // 3 faz akim sensor girisleri.
-#define CURRENT_SENSOR_PIN_A 4
-#define CURRENT_SENSOR_PIN_B 5
-#define CURRENT_SENSOR_PIN_C 6
+// Yeni kartta akim sensor pinleri henuz kesinlesmedi; GPIO4 kontaktor oldugu icin
+// gecici olarak akim okuma devre disi.
+#define CURRENT_SENSORS_ENABLED 0
+#define CURRENT_SENSOR_PIN_A 5
+#define CURRENT_SENSOR_PIN_B 6
+#define CURRENT_SENSOR_PIN_C 7
 
 // Ayrı RGB LED (simdilik uygulama mantiginda kullanilmiyor)
-#define RGB_LED_PIN      16
+#define RGB_LED_PIN      15
 
-#define STATE_LED_PIN    8
-#define WIFI_LED_PIN     17
-#define ERROR_LED_PIN    18
+#define STATE_LED_PIN    13
+#define WIFI_LED_PIN     12
+#define ERROR_LED_PIN    14
 
 // Geri uyumluluk (eski isim)
 #define BLUE_LED_PIN     STATE_LED_PIN
 
+// Yeni kartta latch SET/RESET yok; kontaktor GPIO4 ile surekli seviye surulur.
 #define MOSFET_RESET_PIN 7
-#define MOSFET_SET_PIN   15
+#define MOSFET_SET_PIN   16
 
-// Role modulu aktif-low: LOW=CEK, HIGH=BIRAK
+// Kontactor surucu aktif-high: HIGH=AC, LOW=KAPAT
 #define RELAY_ACTIVE_LOW 0
 
 // Farkli role donanimlari icin cikis secimi.
@@ -41,9 +45,9 @@
 // 1 = latch pulse'lari dogrudan stable state gecisinden tetiklenir
 // 0 = latch pulse'lari role cikisi degisiminden tetiklenir
 #define RELAY_USE_OUTPUT_PIN 1
-#define RELAY_USE_LATCH_PINS 1
-#define RELAY_LATCH_FOLLOW_STATE 1
-#define RELAY_LATCH_PULSE_MS 100
+#define RELAY_USE_LATCH_PINS 0
+#define RELAY_LATCH_FOLLOW_STATE 0
+#define RELAY_LATCH_PULSE_MS 0
 
 // CP PWM surucu ayarlari.
 #define PWM_CHANNEL      0

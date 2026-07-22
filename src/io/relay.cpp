@@ -5,9 +5,9 @@
 // Role kontrol modulu.
 // Web panelinden ayarlanan on/off gecikmeleri burada uygulanir.
 
-// Web arayuzunden gelen gecikme degerleri.
-uint32_t relayOnDelayMs  = 1000; // Varsayılan 1 saniye (B -> C)
-uint32_t relayOffDelayMs = 500;  // Varsayılan 0.5 saniye (C -> B)
+// Yeni kartta kontaktor surekli seviye ile surulur; gecikme/pulse yok.
+uint32_t relayOnDelayMs  = 0;
+uint32_t relayOffDelayMs = 0;
 
 static bool relayOn = false;
 static bool relayAutoEnabled = true;
@@ -126,44 +126,20 @@ void relay_update_auto(const String& stableState, bool pwmEnabled, int pwmDutyPe
 {
   if (!relayAutoEnabled) return;
 
-  // Auto rolenin ana karari burada verilir.
-  // State C/D + PWM aktif degilse role cekilmez.
-  bool shouldBeOn = (stableState == "C" || stableState == "D") && pwmEnabled && pwmDutyPercent > 0;
+  (void)pwmEnabled;
+  (void)pwmDutyPercent;
 
-  // 2. Eğer mevcut durum hedef durumla zaten aynıysa beklemeyi sıfırla
-  if (shouldBeOn == relayOn) {
-    waitingForChange = false;
-    return;
-  }
+  // Yeni kart: GPIO4 state C/D boyunca surekli HIGH, diger state'lerde LOW.
+  bool shouldBeOn = (stableState == "C" || stableState == "D");
+  if (shouldBeOn == relayOn) return;
 
-  // 3. Durum değişikliği ilk kez algılandığında zamanlayıcıyı başlat
-  if (!waitingForChange || pendingTargetState != shouldBeOn) {
-    stateChangeStartTime = millis();
-    pendingTargetState = shouldBeOn;
-    waitingForChange = true;
-    
-    Serial.printf("Röle geçişi bekleniyor: %s (Gecikme uygulanıyor...)\n", shouldBeOn ? "AÇMA" : "KAPATMA");
-  }
+  relayOn = shouldBeOn;
+  applyRelayOutputs(false);
+  waitingForChange = false;
+  pendingTargetState = false;
+  lastSwitchMs = millis();
 
-  // 4. Geçen süreyi kontrol et
-  uint32_t now = millis();
-  uint32_t elapsed = now - stateChangeStartTime;
-  
-  // Acarken onDelay, kapatirken offDelay kullanilir.
-  uint32_t activeDelay = pendingTargetState ? relayOnDelayMs : relayOffDelayMs;
-
-  if (elapsed >= activeDelay) {
-    // Role donanimi icin minimum anahtarlama araligi korumasi.
-    if (minSwitchMs > 0 && (now - lastSwitchMs) < minSwitchMs) return;
-
-    // SÜRE DOLDU - Röleyi güncelle
-    relayOn = pendingTargetState;
-    applyRelayOutputs(true);
-    lastSwitchMs = millis();
-    waitingForChange = false;
-    
-    Serial.printf(">>> RÖLE GÜNCELLENDİ: %s\n", relayOn ? "AÇIK" : "KAPALI");
-  }
+  Serial.printf(">>> KONTAKTOR GPIO%d: %s\n", RELAY_PIN, relayOn ? "HIGH" : "LOW");
 }
 
 void relay_handle_state_pulse(const String& stableState)
