@@ -12,6 +12,7 @@
 #include "ui/oled_ui.h"
 #include "io/current_sensor.h"
 #include "OTA_Manager.h"
+#include "telegram_notify.h"
 
 // Kart kimligi (MAC tabanli)
 String g_boardId = "KART-1";
@@ -506,6 +507,11 @@ void loop()
   auto m = pilot_get();
 
   bool staOk = (WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0);
+
+  // WiFi baglandiginda Telegram'a bildirim gonder (her boot'ta bir kez)
+  if (staOk) {
+    telegram_notify_connect(m.stateStable);
+  }
 
   // Kablo: A değilse takılı kabul
   bool cableConnected = (m.stateStable != "A");
