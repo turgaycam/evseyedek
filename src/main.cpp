@@ -511,6 +511,7 @@ void loop()
   // WiFi baglandiginda Telegram'a bildirim gonder (her boot'ta bir kez)
   if (staOk) {
     telegram_notify_connect(m.stateStable);
+    telegram_loop(m.stateStable);
   }
 
   // Kablo: A değilse takılı kabul
