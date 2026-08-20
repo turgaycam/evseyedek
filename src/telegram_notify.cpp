@@ -21,6 +21,26 @@ static bool s_notified = false;
 static long s_lastUpdateId = 0;
 static uint32_t s_lastPollMs = 0;
 static const uint32_t kPollIntervalMs = 3000;
+static bool s_uidLoaded = false;
+
+// --- update_id'yi NVS'ye kaydet (reboot'ta komut tekrar islenmesin) ---
+static void saveUpdateId(long uid) {
+  Preferences prefs;
+  if (prefs.begin("tgbot", false)) {
+    prefs.putLong("last_uid", uid);
+    prefs.end();
+  }
+}
+
+// --- update_id'yi NVS'den yukle (ilk cagrida) ---
+static void loadUpdateId() {
+  Preferences prefs;
+  if (prefs.begin("tgbot", true)) {
+    s_lastUpdateId = prefs.getLong("last_uid", 0);
+    prefs.end();
+  }
+  Serial.printf("[TG] Son update_id yuklendi: %ld\n", s_lastUpdateId);
+}
 
 // --- Gosterim ismi: ozel isim varsa onu, yoksa default kullan ---
 static String displayName() {
@@ -62,7 +82,7 @@ static void sendTelegramMessage(const String& text) {
   client.setInsecure();
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(5000);
+  http.setTimeout(2000);
   if (http.begin(client, url)) {
     int code = http.GET();
     if (code != 200) {
@@ -88,6 +108,12 @@ static String formatUptime() {
 
 // --- Cihaz baglaninca bildirim ---
 void telegram_notify_connect(const String& pilotState) {
+  // Ilk cagrida update_id'yi NVS'den yukle
+  if (!s_uidLoaded) {
+    s_uidLoaded = true;
+    loadUpdateId();
+  }
+
   if (s_notified) return;
   if (strlen(TELEGRAM_BOT_TOKEN) == 0 || strlen(TELEGRAM_CHAT_ID) == 0) return;
   if (WiFi.status() != WL_CONNECTED || WiFi.localIP()[0] == 0) return;
@@ -114,7 +140,6 @@ static void handleCommand(const String& cmd, const String& pilotState) {
     String arg = cmd.substring(5);
     arg.trim();
     if (arg.length() == 0) {
-      // Mevcut ismi goster
       String msg = "Kart ismi: " + displayName() + "\n";
       msg += "MAC: " + g_boardMac + "\n";
       msg += "Degistirmek icin: /name YeniIsim";
@@ -122,7 +147,6 @@ static void handleCommand(const String& cmd, const String& pilotState) {
     } else if (arg.length() > 30) {
       sendTelegramMessage("Isim cok uzun (max 30 karakter)");
     } else {
-      // Yeni ismi kaydet
       g_boardCustomName = arg;
       Preferences prefs;
       if (prefs.begin("board", false)) {
@@ -179,7 +203,7 @@ static void handleCommand(const String& cmd, const String& pilotState) {
   }
   else if (cmd == "/rollback") {
     sendTelegramMessage(displayName() + " - Onceki firmware'e donuluyor...");
-    delay(500);
+    delay(1000);
     if (OTA_Manager::selectAlternateOtaBootPartition()) {
       delay(100);
       esp_restart();
@@ -192,7 +216,7 @@ static void handleCommand(const String& cmd, const String& pilotState) {
   }
   else if (cmd == "/restart") {
     sendTelegramMessage(displayName() + " - Yeniden baslatiliyor...");
-    delay(500);
+    delay(1000);
     esp_restart();
   }
   else {
@@ -219,7 +243,7 @@ void telegram_loop(const String& pilotState) {
   client.setInsecure();
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(3000);
+  http.setTimeout(1500);
   if (!http.begin(client, url)) return;
 
   int code = http.GET();
@@ -231,6 +255,12 @@ void telegram_loop(const String& pilotState) {
   String body = http.getString();
   http.end();
 
+  // Response cok buyukse atla (memory korumasi)
+  if (body.length() > 2048) {
+    Serial.printf("[TG] Response cok buyuk: %u byte, ataniyor\n", body.length());
+    return;
+  }
+
   // Bos result kontrolu
   if (body.indexOf("\"result\":[]") >= 0) return;
 
@@ -238,7 +268,10 @@ void telegram_loop(const String& pilotState) {
   int uidIdx = body.indexOf("\"update_id\":");
   if (uidIdx < 0) return;
   long uid = atol(body.c_str() + uidIdx + 12);
-  if (uid > 0) s_lastUpdateId = uid;
+  if (uid > 0) {
+    s_lastUpdateId = uid;
+    saveUpdateId(uid);  // NVS'ye kaydet - reboot'ta tekrar islenmesin!
+  }
 
   // chat ID dogrula (guvenlik)
   const char* chatPattern = "\"chat\":{\"id\":";
