@@ -585,12 +585,7 @@ static void handleUpdateCheck() {
   if (cmp > 0) {
     ctx.lastStatus = "update_available";
     Serial.printf("[OTA] Yeni surum bulunuyor -> %s\n", m.url.c_str());
-    if (!ctx.installRequested) {
-      ctx.lastUpdateOk = true;
-      ctx.lastError = "Admin onayi bekleniyor";
-      return;
-    }
-    ctx.installRequested = false;
+    // Otomatik guncelleme: admin onayı olmadan direkt indir ve kur
     if (!precheckFirmware(m)) {
       ctx.lastUpdateOk = false;
       noteFailure("precheck_failed");
