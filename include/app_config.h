@@ -18,3 +18,8 @@ extern float marginDown;
 
 extern int   stableCount;
 extern int   loopIntervalMs;
+
+// Kart kimligi (MAC tabanli)
+extern String g_boardId;       // "KART-1" veya "KART-2"
+extern String g_boardMac;      // MAC adresi (XX:XX:XX:XX:XX:XX)
+extern String g_boardName;     // "Eski Kart" veya "Yeni Kart"

@@ -13,6 +13,39 @@
 #include "io/current_sensor.h"
 #include "OTA_Manager.h"
 
+// Kart kimligi (MAC tabanli)
+String g_boardId = "KART-1";
+String g_boardMac = "";
+String g_boardName = "Eski Kart";
+
+static void initBoardIdentity()
+{
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  g_boardMac = String(macStr);
+
+  // MAC adresine göre kart kimligi belirle
+  // KART-1: Eski kart (ilk kart)
+  // KART-2: Yeni kart (ikinci kart)
+  // Buraya kendi kartlarinlar MAC adresini yazin
+  if (g_boardMac == "3C:DC:75:55:3B:48") {  // <-- KART-2 MAC adresi (yeni kart)
+    g_boardId = "KART-2";
+    g_boardName = "Yeni Kart";
+  } else if (g_boardMac == "XX:XX:XX:XX:XX:XX") {  // <-- KART-1 MAC adresi (eski kart)
+    g_boardId = "KART-1";
+    g_boardName = "Eski Kart";
+  } else {
+    g_boardId = "KART-?";
+    g_boardName = "Bilinmeyen Kart";
+  }
+
+  Serial.printf("[BOARD] ID=%s MAC=%s NAME=%s\n",
+                g_boardId.c_str(), g_boardMac.c_str(), g_boardName.c_str());
+}
+
 static constexpr char kOtaManifestUrl[] =
   "https://raw.githubusercontent.com/turgaycam/evseyedek/backup-new-board-ota/version.json";
 static constexpr char kGitHubFingerprint[] = "";
@@ -404,6 +437,7 @@ void setup()
   Serial.begin(115200);
   delay(200);
   Serial.println("BOOT OK");
+  initBoardIdentity();
   initFactoryButton();
   handleRescueFallbackIfNeeded();
 

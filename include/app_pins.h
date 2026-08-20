@@ -25,8 +25,8 @@
 #define RGB_LED_PIN      15
 
 #define STATE_LED_PIN    13
-#define WIFI_LED_PIN     12
-#define ERROR_LED_PIN    14
+#define WIFI_LED_PIN     14
+#define ERROR_LED_PIN    12
 
 // Geri uyumluluk (eski isim)
 #define BLUE_LED_PIN     STATE_LED_PIN
