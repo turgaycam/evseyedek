@@ -23,3 +23,4 @@ extern int   loopIntervalMs;
 extern String g_boardId;       // "KART-1" veya "KART-2"
 extern String g_boardMac;      // MAC adresi (XX:XX:XX:XX:XX:XX)
 extern String g_boardName;     // "Eski Kart" veya "Yeni Kart"
+extern String g_boardCustomName; // Telegram'dan /name ile ayarlanan ozel isim

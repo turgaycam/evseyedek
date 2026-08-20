@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp_system.h>
+#include <Preferences.h>
 
 #include "app_config.h"
 #include "OTA_Manager.h"
@@ -20,6 +21,12 @@ static bool s_notified = false;
 static long s_lastUpdateId = 0;
 static uint32_t s_lastPollMs = 0;
 static const uint32_t kPollIntervalMs = 3000;
+
+// --- Gosterim ismi: ozel isim varsa onu, yoksa default kullan ---
+static String displayName() {
+  if (g_boardCustomName.length() > 0) return g_boardCustomName;
+  return g_boardId + " (" + g_boardName + ")";
+}
 
 // --- URL encoder (mesaj icin, buyuk buffer yok) ---
 static String urlEncode(const String& s) {
@@ -87,41 +94,63 @@ void telegram_notify_connect(const String& pilotState) {
 
   s_notified = true;
 
-  String msg = g_boardId;
-  msg += " (";
-  msg += g_boardName;
-  msg += ") baglandi\n";
-  msg += "WiFi: ";
-  msg += WiFi.SSID();
-  msg += "\nSinyal: ";
-  msg += String(WiFi.RSSI());
-  msg += " dBm\nIP: ";
-  msg += WiFi.localIP().toString();
-  msg += "\nFW: ";
-  msg += CURRENT_VERSION;
-  msg += "\nState: ";
-  msg += pilotState;
-  msg += "\n\nKomutlar icin /help yaz";
+  String msg = displayName();
+  msg += " baglandi\n";
+  msg += "MAC: " + g_boardMac + "\n";
+  msg += "WiFi: " + WiFi.SSID() + "\n";
+  msg += "Sinyal: " + String(WiFi.RSSI()) + " dBm\n";
+  msg += "IP: " + WiFi.localIP().toString() + "\n";
+  msg += "FW: " + String(CURRENT_VERSION) + "\n";
+  msg += "State: " + pilotState + "\n";
+  msg += "\nKomutlar icin /help yaz";
 
   sendTelegramMessage(msg);
 }
 
 // --- Komut isle ---
 static void handleCommand(const String& cmd, const String& pilotState) {
+  // /name komutu: /name Garaj1 -> ismi ayarla, /name -> mevcut ismi goster
+  if (cmd.startsWith("/name")) {
+    String arg = cmd.substring(5);
+    arg.trim();
+    if (arg.length() == 0) {
+      // Mevcut ismi goster
+      String msg = "Kart ismi: " + displayName() + "\n";
+      msg += "MAC: " + g_boardMac + "\n";
+      msg += "Degistirmek icin: /name YeniIsim";
+      sendTelegramMessage(msg);
+    } else if (arg.length() > 30) {
+      sendTelegramMessage("Isim cok uzun (max 30 karakter)");
+    } else {
+      // Yeni ismi kaydet
+      g_boardCustomName = arg;
+      Preferences prefs;
+      if (prefs.begin("board", false)) {
+        prefs.putString("name", arg);
+        prefs.end();
+      }
+      sendTelegramMessage("Kart ismi ayarlandi: " + arg + "\nMAC: " + g_boardMac);
+    }
+    return;
+  }
+
   if (cmd == "/help" || cmd == "/start") {
     sendTelegramMessage(
-      String(g_boardId) + " (" + g_boardName + ")\n\n"
+      String(displayName() + "\n\n"
       "Komutlar:\n"
       "/help - Bu mesaj\n"
       "/status - Cihaz durumu (WiFi, state, uptime)\n"
       "/info - Cihaz bilgileri (MAC, FW, partition)\n"
+      "/name - Kart ismini goster\n"
+      "/name <isim> - Kart ismini ayarla (orn: /name Garaj1)\n"
       "/update - Son surumu kontrol et + yukle\n"
       "/rollback - Onceki firmware'e don\n"
-      "/restart - Cihazi yeniden baslat"
+      "/restart - Cihazi yeniden baslat")
     );
   }
   else if (cmd == "/status") {
-    String msg = g_boardId + " (" + g_boardName + ")\n";
+    String msg = displayName() + "\n";
+    msg += "MAC: " + g_boardMac + "\n";
     msg += "State: " + pilotState + "\n";
     msg += "WiFi: " + WiFi.SSID() + "\n";
     msg += "Sinyal: " + String(WiFi.RSSI()) + " dBm\n";
@@ -130,7 +159,7 @@ static void handleCommand(const String& cmd, const String& pilotState) {
     sendTelegramMessage(msg);
   }
   else if (cmd == "/info") {
-    String msg = g_boardId + " (" + g_boardName + ")\n";
+    String msg = displayName() + "\n";
     msg += "MAC: " + g_boardMac + "\n";
     msg += "FW: " + String(CURRENT_VERSION) + "\n";
     msg += "Partition: " + String(OTA_Manager::runningPartitionLabel()) + "\n";
@@ -141,6 +170,7 @@ static void handleCommand(const String& cmd, const String& pilotState) {
   else if (cmd == "/update") {
     String remote = OTA_Manager::lastRemoteVersion();
     String msg = "Guncelleme baslatildi...\n";
+    msg += "Kart: " + displayName() + "\n";
     msg += "Mevcut: " + String(OTA_Manager::currentVersion());
     if (remote.length() > 0) msg += "\nHedef: " + remote;
     sendTelegramMessage(msg);
@@ -148,7 +178,7 @@ static void handleCommand(const String& cmd, const String& pilotState) {
     OTA_Manager::triggerInstallNow();
   }
   else if (cmd == "/rollback") {
-    sendTelegramMessage("Onceki firmware'e donuluyor...");
+    sendTelegramMessage(displayName() + " - Onceki firmware'e donuluyor...");
     delay(500);
     if (OTA_Manager::selectAlternateOtaBootPartition()) {
       delay(100);
@@ -161,7 +191,7 @@ static void handleCommand(const String& cmd, const String& pilotState) {
     }
   }
   else if (cmd == "/restart") {
-    sendTelegramMessage("Cihazi yeniden baslatiyorum...");
+    sendTelegramMessage(displayName() + " - Yeniden baslatiliyor...");
     delay(500);
     esp_restart();
   }
@@ -210,7 +240,7 @@ void telegram_loop(const String& pilotState) {
   long uid = atol(body.c_str() + uidIdx + 12);
   if (uid > 0) s_lastUpdateId = uid;
 
-  // chat ID dogrula (güvenlik)
+  // chat ID dogrula (guvenlik)
   const char* chatPattern = "\"chat\":{\"id\":";
   int chatIdx = body.indexOf(chatPattern);
   if (chatIdx >= 0) {

@@ -18,6 +18,7 @@
 String g_boardId = "KART-1";
 String g_boardMac = "";
 String g_boardName = "Eski Kart";
+String g_boardCustomName = "";  // Telegram /name ile ayarlanan ozel isim (NVS'de kalici)
 
 static void initBoardIdentity()
 {
@@ -439,6 +440,19 @@ void setup()
   delay(200);
   Serial.println("BOOT OK");
   initBoardIdentity();
+
+  // Ozel kart ismini NVS'den yukle (Telegram /name ile ayarlanan)
+  {
+    Preferences prefs;
+    if (prefs.begin("board", true)) {
+      g_boardCustomName = prefs.getString("name", "");
+      prefs.end();
+      if (g_boardCustomName.length() > 0) {
+        Serial.printf("[BOARD] Ozel isim: %s\n", g_boardCustomName.c_str());
+      }
+    }
+  }
+
   initFactoryButton();
   handleRescueFallbackIfNeeded();
 
