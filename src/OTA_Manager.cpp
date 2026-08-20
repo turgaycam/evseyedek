@@ -309,7 +309,7 @@ static bool parseManifest(const String& payload, Manifest& out) {
     cleanPayload.remove(0, 3);
   }
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;
   auto err = deserializeJson(doc, cleanPayload);
   if (err) {
     Serial.printf("[OTA] version.json parse hatasi: %s\n", err.c_str());
