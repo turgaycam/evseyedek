@@ -9,8 +9,8 @@
 #define OLED_SCL 17
 
 // CP / kontaktor / guc elektroniigi hatlari.
-#define CP_PWM_PIN       2
-#define CP_ADC_PIN       1
+#define CP_PWM_PIN       1
+#define CP_ADC_PIN       2
 #define PP_ADC_PIN       16
 #define RELAY_PIN        4
 
