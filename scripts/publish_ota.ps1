@@ -34,9 +34,7 @@ $sha256 = (Get-FileHash -LiteralPath $targetBin -Algorithm SHA256).Hash.ToLowerI
 
 $manifest = [ordered]@{
     version = $Version
-    url = "https://raw.githubusercontent.com/RotosisRobotics/RotosisEVSE/main/firmware/$TargetName"
-    size = [uint32]$sizeBytes
-    sha256 = $sha256
+    url = "https://raw.githubusercontent.com/turgaycam/evseyedek/backup-new-board-ota/firmware/$TargetName"
 }
 if (![string]::IsNullOrWhiteSpace($HealthUrl)) {
     $manifest.health_url = $HealthUrl
@@ -67,7 +65,7 @@ if ($Push) {
             throw "git commit basarisiz"
         }
 
-        git push origin main
+        git push origin backup-new-board-ota
         if ($LASTEXITCODE -ne 0) {
             throw "git push basarisiz"
         }
@@ -83,5 +81,5 @@ if ($Push) {
     Write-Host "Sonraki adim:"
     Write-Host "git add firmware/$TargetName version.json"
     Write-Host "git commit -m 'OTA $Version'"
-    Write-Host "git push origin main"
+    Write-Host "git push origin backup-new-board-ota"
 }

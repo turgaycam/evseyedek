@@ -4,3 +4,11 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Gizli bilgiler (GitHub'a gitmesin!)
+include/secrets.h
+
+# Binary dosyalar (OTA icin firmware/uzaktanotali.bin git'te kalsin)
+*.bin
+!firmware/uzaktanotali.bin
+!ota-factory/firmware.bin

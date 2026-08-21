@@ -21,9 +21,6 @@
 #define CURRENT_SENSOR_PIN_B 6
 #define CURRENT_SENSOR_PIN_C 7
 
-// Ayrı RGB LED (simdilik uygulama mantiginda kullanilmiyor)
-#define RGB_LED_PIN      15
-
 #define STATE_LED_PIN    13
 #define WIFI_LED_PIN     14
 #define ERROR_LED_PIN    12
@@ -31,9 +28,10 @@
 // Geri uyumluluk (eski isim)
 #define BLUE_LED_PIN     STATE_LED_PIN
 
-// Yeni kartta latch SET/RESET yok; kontaktor GPIO4 ile surekli seviye surulur.
-#define MOSFET_RESET_PIN 7
-#define MOSFET_SET_PIN   16
+// Latch SET/RESET pinleri (sadece RELAY_USE_LATCH_PINS=1 iken kullanilir).
+// GPIO8 ve GPIO9 secildi; GPIO7 (L3 akim) ve GPIO16 (PP ADC) ile cakismamasi icin.
+#define MOSFET_RESET_PIN 8
+#define MOSFET_SET_PIN   9
 
 // Kontactor surucu aktif-high: HIGH=AC, LOW=KAPAT
 #define RELAY_ACTIVE_LOW 0

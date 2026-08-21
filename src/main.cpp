@@ -480,8 +480,6 @@ void setup()
   relay_set_auto_enabled(true);
   relay_set_min_switch_ms(0);     // Yeni kartta kontaktor cikisi gecikmesiz seviye surulur.
 
-  // Test dirençleri
-
   // Pilot
   pilot_init();
 
