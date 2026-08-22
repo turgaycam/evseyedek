@@ -2,9 +2,9 @@
 #include <Arduino.h>
 
 // Varsayilan firmware versiyonu build bayragi ile gelmezse burada tanimlanir.
-// PlatformIO'da build_flags icine -DCURRENT_VERSION="1.77" ekleyerek override edebilirsin.
+// PlatformIO'da build_flags icine -DCURRENT_VERSION="1.78" ekleyerek override edebilirsin.
 #ifndef CURRENT_VERSION
-#define CURRENT_VERSION "1.77"
+#define CURRENT_VERSION "1.78"
 #endif
 
 namespace OTA_Manager {

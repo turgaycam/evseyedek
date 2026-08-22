@@ -519,6 +519,7 @@ void loop()
 
   if (staOk) {
     telegram_notify_connect(m.stateStable);
+    telegram_notify_state_change(m.stateStable);
     telegram_loop(m.stateStable);
   }
 

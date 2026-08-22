@@ -23,6 +23,7 @@
 
 static bool s_notified = false;
 static long s_lastUpdateId = 0;
+static String s_lastNotifiedState = "";
 static bool s_uidLoaded = false;
 static TaskHandle_t s_tgTaskHandle = NULL;
 
@@ -91,6 +92,17 @@ static void sendTelegramMessage(const String& text) {
     }
     http.end();
   }
+}
+
+// IEC 61851 state etiketleri (web arayuzuyle uyumlu).
+static void stateLabel(const String& st, String& name, String& desc) {
+  if (st == "A") { name = "Hazır"; desc = "Araç bekleniyor"; }
+  else if (st == "B") { name = "Bağlı"; desc = "Araç bağlandı, hazır bekliyor"; }
+  else if (st == "C") { name = "Şarj Ediliyor"; desc = "Enerji aktarımı sürüyor ⚡"; }
+  else if (st == "D") { name = "Havalandırma"; desc = "Şarj sürüyor (fan/havalandırma)"; }
+  else if (st == "E") { name = "Şarj Hatası"; desc = "Pilot hata durumu ⚠️"; }
+  else if (st == "F") { name = "Kritik Hata"; desc = "Koruma aktif, şarj durduruldu 🛑"; }
+  else { name = st; desc = "Bilinmeyen durum"; }
 }
 
 static String formatUptime() {
@@ -275,6 +287,35 @@ void telegram_notify_connect(const String& pilotState) {
   msg += "State: " + pilotState;
   sendTelegramMessage(msg);
   s_notified = true;
+}
+
+// Pilot state degistiginde Telegram'a bildirim gonderir.
+// Ilk cagrista sadece referans state kaydedilir (boot bildirimi ayrica yapilir).
+void telegram_notify_state_change(const String& pilotState) {
+  if (strlen(TELEGRAM_BOT_TOKEN) == 0 || strlen(TELEGRAM_CHAT_ID) == 0) return;
+  if (WiFi.status() != WL_CONNECTED || WiFi.localIP()[0] == 0) return;
+
+  if (s_lastNotifiedState.length() == 0) {
+    s_lastNotifiedState = pilotState;
+    return;
+  }
+  if (pilotState == s_lastNotifiedState) return;
+
+  String prevName, prevDesc, newName, newDesc;
+  stateLabel(s_lastNotifiedState, prevName, prevDesc);
+  stateLabel(pilotState, newName, newDesc);
+
+  String prevStateCode = s_lastNotifiedState;
+  String msg = displayName() + "\n";
+  msg += "State: " + prevName + " (" + prevStateCode + ")";
+  msg += " -> ";
+  msg += newName + " (" + pilotState + ")\n";
+  msg += newDesc;
+
+  s_lastNotifiedState = pilotState;
+  sendTelegramMessage(msg);
+  Serial.printf("[TG] State bildirimi: %s -> %s\n",
+                prevStateCode.c_str(), pilotState.c_str());
 }
 
 void telegram_loop(const String& pilotState) {
