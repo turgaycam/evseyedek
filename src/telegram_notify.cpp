@@ -460,6 +460,44 @@ void telegram_notify_connect(const String& pilotState) {
   s_notified = true;
 }
 
+// WiFi baglanti kesintisi takibi.
+// Baglanti koptugunda sure sayilir; geri gelindiginde kesinti raporu gonderilir.
+// Not: Baglanti kopukken internet erisimi olmadigindan mesaj ancak reconnect
+// sonrasi gonderilebilir. 10 sn'den kisa dalgalanmalar bildirilmez (spam onleme).
+static bool s_wifiWasConnected = false;
+static uint32_t s_wifiDownSinceMs = 0;
+
+void telegram_notify_wifi_link(bool connected) {
+  if (connected) {
+    if (!s_wifiWasConnected) {
+      s_wifiWasConnected = true;
+      if (s_wifiDownSinceMs != 0) {
+        uint32_t downMs = millis() - s_wifiDownSinceMs;
+        s_wifiDownSinceMs = 0;
+        if (downMs >= 10000) {
+          uint32_t sec = downMs / 1000;
+          uint32_t m = sec / 60;
+          uint32_t s = sec % 60;
+          String msg = displayName() + "\n";
+          msg += "⚠️ Bağlantı kesintisi yaşadım\n";
+          msg += "Kesinti süresi: ";
+          if (m > 0) msg += String(m) + "dk ";
+          msg += String(s) + "sn\n";
+          msg += "Şimdi tekrar bağlıyım.";
+          sendTelegramMessage(msg);
+          Serial.printf("[TG] WiFi kesinti raporu: %lu sn\n", (unsigned long)sec);
+        }
+      }
+    }
+  } else {
+    if (s_wifiWasConnected) {
+      s_wifiWasConnected = false;
+      s_wifiDownSinceMs = millis();
+      Serial.println("[TG] WiFi baglantisi koptu");
+    }
+  }
+}
+
 // Pilot state degistiginde Telegram'a bildirim gonderir.
 // Ilk cagrista sadece referans state kaydedilir (boot bildirimi ayrica yapilir).
 void telegram_notify_state_change(const String& pilotState) {

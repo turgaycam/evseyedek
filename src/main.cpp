@@ -544,7 +544,10 @@ void loop()
   if (staOk) {
     telegram_notify_connect(m.stateStable);
     telegram_notify_state_change(m.stateStable);
+    telegram_notify_wifi_link(true);
     telegram_loop(m.stateStable);
+  } else {
+    telegram_notify_wifi_link(false);
   }
 
   // Kablo: A değilse takılı kabul
