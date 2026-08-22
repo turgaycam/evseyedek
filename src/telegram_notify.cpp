@@ -118,7 +118,146 @@ static String formatUptime() {
   return out;
 }
 
-static void handleCommand(const String& cmd, const String& pilotState) {
+// Kendi istasyon kodunu MAC'ten turet (son 6 hex karakter).
+// Ornek MAC "3C:DC:75:55:3B:48" -> "553B48"
+static String myStationCode() {
+  if (g_boardMac.length() < 17) return "";
+  String tail = g_boardMac.substring(12);
+  tail.replace(":", "");
+  tail.toUpperCase();
+  return tail;
+}
+
+static bool isValidStationCode(const String& code) {
+  if (code.length() != 6) return false;
+  for (size_t i = 0; i < code.length(); ++i) {
+    char c = code[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) return false;
+  }
+  return true;
+}
+
+// Turkce karakterleri ASCII karsiliklarina cevirir + lowercase yapar.
+// Karsilastirmalarda kullanilir ("Pangolin" == "pangolin", "DURUM" == "durum").
+static String normalizeTr(const String& in) {
+  String out;
+  out.reserve(in.length());
+  for (size_t i = 0; i < in.length();) {
+    uint8_t c = (uint8_t)in[i];
+    if (c == 0xC3 && i + 1 < in.length()) {
+      uint8_t c2 = (uint8_t)in[i + 1];
+      if (c2 == 0xA7 || c2 == 0x87) { out += 'c'; i += 2; continue; } // c/C
+      if (c2 == 0xB6 || c2 == 0x96) { out += 'o'; i += 2; continue; } // o/O
+      if (c2 == 0xBC || c2 == 0x9C) { out += 'u'; i += 2; continue; } // u/U
+    } else if (c == 0xC4 && i + 1 < in.length()) {
+      uint8_t c2 = (uint8_t)in[i + 1];
+      if (c2 == 0x9F || c2 == 0x9E) { out += 'g'; i += 2; continue; } // g/G
+      if (c2 == 0xB1 || c2 == 0xB0) { out += 'i'; i += 2; continue; } // i/I
+    } else if (c == 0xC5 && i + 1 < in.length()) {
+      uint8_t c2 = (uint8_t)in[i + 1];
+      if (c2 == 0x9F || c2 == 0x9E) { out += 's'; i += 2; continue; } // s/S
+    }
+    char ascii = (char)c;
+    if (ascii >= 'A' && ascii <= 'Z') ascii = ascii - 'A' + 'a';
+    out += ascii;
+    i++;
+  }
+  return out;
+}
+
+// Bu kartin cevap verebilecegi isimler (normalize edilmis).
+static bool isMyName(const String& nameNorm) {
+  if (nameNorm.length() == 0) return false;
+  String dn = normalizeTr(displayName());
+  String cn = normalizeTr(g_boardCustomName);
+  String bn = normalizeTr(g_boardName);
+  return (nameNorm == dn || nameNorm == cn || nameNorm == bn);
+}
+
+static void handleCommand(const String& rawCmd, const String& pilotState) {
+  String cmd = rawCmd;
+  cmd.trim();
+
+  // Turkce komut destegi: mesaj normalize edilir (turkce karakterler -> ascii,
+  // lowercase). Ornekler:
+  //   "pangolin durum"        -> yalnizca Pangolin durumu bildirir
+  //   "hepsi durum"           -> tum kartlar bildirir
+  //   "kakapo guncelle"       -> Kakapo guncelleme baslatir
+  //   "yardim"                -> komut listesi
+  String norm = normalizeTr(cmd);
+
+  String target = "";
+  if (norm.startsWith("/")) {
+    // Slash komutlari: "/<stationCode> <komut>" veya "/all <komut>"
+    if (norm.indexOf(' ') > 1) {
+      String firstToken = norm.substring(1, norm.indexOf(' '));
+      firstToken.trim();
+      if (firstToken == "all") {
+        target = "ALL";
+        cmd = "/" + cmd.substring(cmd.indexOf(' ') + 1);
+        cmd.trim();
+        norm = "/" + norm.substring(norm.indexOf(' ') + 1);
+        norm.trim();
+      } else if (isValidStationCode(firstToken)) {
+        target = firstToken;
+        cmd = "/" + cmd.substring(cmd.indexOf(' ') + 1);
+        cmd.trim();
+        norm = "/" + norm.substring(norm.indexOf(' ') + 1);
+        norm.trim();
+      }
+    }
+  } else {
+    // Turkce komutlar: ilk kelime hedef olabilir (kart adi / hepsi / kod).
+    int sp = norm.indexOf(' ');
+    String firstTok = (sp > 0) ? norm.substring(0, sp) : "";
+    String rest = (sp > 0) ? norm.substring(sp + 1) : "";
+    rest.trim();
+
+    if (firstTok == "hepsi" || firstTok == "tumu" || firstTok == "herkes") {
+      target = "ALL";
+      cmd = rest;
+      norm = rest;
+    } else if (isMyName(firstTok)) {
+      target = myStationCode();
+      cmd = rest;
+      norm = rest;
+    } else if (isValidStationCode(firstTok)) {
+      target = firstTok;
+      cmd = rest;
+      norm = rest;
+    } else {
+      // Ilk kelime komut (hedefsiz): tum mesaj komut sayilir.
+      cmd = norm;
+    }
+  }
+
+  const String myCode = myStationCode();
+  if (target.length() > 0 && target != "ALL" && target != myCode) {
+    Serial.printf("[TG] Komut baska karta ait (%s), yok sayildi\n", target.c_str());
+    return;
+  }
+
+  // Aksiyon komutlarinda hedef zorunlu; aksi halde ayni bota bagli
+  // tum kartlar ayni anda cevap verip karisiklik yaratir.
+  bool needsTarget =
+    norm.startsWith("durum") || norm.startsWith("bilgi") ||
+    norm.startsWith("guncelle") || norm.startsWith("geri al") ||
+    norm.startsWith("gerial") || norm.startsWith("yeniden baslat") ||
+    norm.startsWith("isim") ||
+    norm.startsWith("/status") || norm.startsWith("/info") ||
+    norm.startsWith("/update") || norm.startsWith("/rollback") ||
+    norm.startsWith("/restart") || norm.startsWith("/name");
+  if (needsTarget && target.length() == 0) {
+    sendTelegramMessage(
+      String(displayName() + "\n"
+      "Birden fazla istasyon ayni bota bagli.\n"
+      "Komutu kart adiyla gonderin, orn:\n"
+      "" + displayName() + " durum\n"
+      "Tum kartlara: hepsi durum")
+    );
+    return;
+  }
+
   if (cmd.startsWith("/name")) {
     String arg = cmd.substring(5);
     arg.trim();
@@ -141,21 +280,22 @@ static void handleCommand(const String& cmd, const String& pilotState) {
     return;
   }
 
-  if (cmd == "/help" || cmd == "/start") {
+  if (norm == "yardim" || norm == "komutlar" || norm == "help" ||
+      norm == "/help" || norm == "/start" || norm == "start") {
     sendTelegramMessage(
       String(displayName() + "\n\n"
-      "Komutlar:\n"
-      "/help - Bu mesaj\n"
-      "/status - Cihaz durumu\n"
-      "/info - Cihaz bilgileri\n"
-      "/name - Kart ismini goster\n"
-      "/name <isim> - Kart ismini ayarla\n"
-      "/update - Son surumu kontrol et + yukle\n"
-      "/rollback - Onceki firmware'e don\n"
-      "/restart - Cihazi yeniden baslat")
+      "Komutlar (Turkce):\n"
+      "yardim - Bu mesaj\n"
+      "" + displayName() + " durum - Bu kartin durumu\n"
+      "hepsi durum - Tum kartlarin durumu\n"
+      "" + displayName() + " bilgi - Cihaz bilgileri\n"
+      "" + displayName() + " guncelle - Guncelleme baslat\n"
+      "" + displayName() + " geri al - Onceki firmware\n"
+      "" + displayName() + " yeniden baslat - Restart\n"
+      "" + displayName() + " isim <yeni isim> - Isim degistir")
     );
   }
-  else if (cmd == "/status") {
+  else if (norm == "durum" || norm == "/status") {
     String msg = displayName() + "\n";
     msg += "MAC: " + g_boardMac + "\n";
     msg += "State: " + pilotState + "\n";
@@ -165,7 +305,7 @@ static void handleCommand(const String& cmd, const String& pilotState) {
     msg += "Uptime: " + formatUptime();
     sendTelegramMessage(msg);
   }
-  else if (cmd == "/info") {
+  else if (norm == "bilgi" || norm == "/info") {
     String msg = displayName() + "\n";
     msg += "MAC: " + g_boardMac + "\n";
     msg += "FW: " + String(CURRENT_VERSION) + "\n";
@@ -174,7 +314,7 @@ static void handleCommand(const String& cmd, const String& pilotState) {
     msg += "Remote: " + String(OTA_Manager::lastRemoteVersion());
     sendTelegramMessage(msg);
   }
-  else if (cmd == "/update") {
+  else if (norm == "guncelle" || norm == "guncelleme" || norm == "/update") {
     String remote = OTA_Manager::lastRemoteVersion();
     String msg = "Guncelleme baslatildi...\n";
     msg += "Kart: " + displayName() + "\n";
@@ -184,7 +324,7 @@ static void handleCommand(const String& cmd, const String& pilotState) {
     OTA_Manager::triggerCheckNow();
     OTA_Manager::triggerInstallNow();
   }
-  else if (cmd == "/rollback") {
+  else if (norm == "geri al" || norm == "gerial" || norm == "/rollback") {
     sendTelegramMessage(displayName() + " - Onceki firmware'e donuluyor...");
     delay(1000);
     if (OTA_Manager::selectAlternateOtaBootPartition()) {
@@ -197,13 +337,16 @@ static void handleCommand(const String& cmd, const String& pilotState) {
       sendTelegramMessage("Geri donulecek partition bulunamadi");
     }
   }
-  else if (cmd == "/restart") {
+  else if (norm == "yeniden baslat" || norm == "restart" || norm == "reboot" || norm == "/restart") {
     sendTelegramMessage(displayName() + " - Yeniden baslatiliyor...");
     delay(1000);
     esp_restart();
   }
   else {
-    sendTelegramMessage("Bilinmeyen komut: " + cmd + "\n/help yazarak komutlari gorebilirsin");
+    sendTelegramMessage(
+      String("Anlasilmadi: " + rawCmd + "\n\nOrnek komutlar:\n"
+      "" + displayName() + " durum\nhepsi durum\nyardim")
+    );
   }
 }
 

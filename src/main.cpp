@@ -20,6 +20,15 @@ String g_boardMac = "";
 String g_boardName = "Eski Kart";
 String g_boardCustomName = "";
 
+// Yeni baglanan kartlara otomatik verilen nadir hayvan/bitki isimleri.
+// Ayni MAC her zaman ayni ismi alir (deterministik secim).
+static const char* const kRareNames[] = {
+  "Pangolin", "Kakapo", "Aksolotl", "Okapi", "Saola",
+  "Narval", "Quokka", "Ayayi", "Manul", "Tarsiyer",
+  "Dugong", "Fossa", "Irbis", "Rafflesia", "Sifaka"
+};
+static constexpr size_t kRareNameCount = sizeof(kRareNames) / sizeof(kRareNames[0]);
+
 static void initBoardIdentity()
 {
   uint8_t mac[6];
@@ -31,13 +40,14 @@ static void initBoardIdentity()
 
   if (g_boardMac == "3C:DC:75:55:3B:48") {
     g_boardId = "KART-2";
-    g_boardName = "Yeni Kart";
-  } else if (g_boardMac == "XX:XX:XX:XX:XX:XX") {
+    g_boardName = "Kakapo";
+  } else if (g_boardMac == "3C:DC:75:55:3A:D0") {
     g_boardId = "KART-1";
-    g_boardName = "Eski Kart";
+    g_boardName = "Pangolin";
   } else {
     g_boardId = "KART-?";
-    g_boardName = "Bilinmeyen Kart";
+    // Bilinen listede olmayan yeni kart: MAC'ten deterministik nadir isim.
+    g_boardName = kRareNames[mac[5] % kRareNameCount];
   }
 
   Serial.printf("[BOARD] ID=%s MAC=%s NAME=%s\n",
