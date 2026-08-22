@@ -165,23 +165,34 @@ static String normalizeTr(const String& in) {
   return out;
 }
 
-// Mesajin basi bu kartin adiyla eslesiyor mu? (cok kelimeli isimler dahil)
-// Ornek: kart adi "Mersin Tatlısı" ise "mersin tatlısı durum" eslesir.
+// Mesajin basi bu kartin adiyla eslesiyor mu? (cok kelimeli ve bitisik yazim dahil)
+// Ornekler: kart adi "Ters Lale" ise su mesajlar eslesir:
+//   "ters lale durum"  -> bosluklu yazim
+//   "terslale durum"   -> bitisik yazim
 // Donen deger: eslesen ismin normalize edilmis uzunlugu (0 = eslesme yok).
 static int matchMyNamePrefix(const String& normMsg) {
-  String candidates[3];
-  candidates[0] = normalizeTr(displayName());
-  candidates[1] = normalizeTr(g_boardCustomName);
-  candidates[2] = normalizeTr(g_boardName);
+  String base[3];
+  base[0] = normalizeTr(displayName());
+  base[1] = normalizeTr(g_boardCustomName);
+  base[2] = normalizeTr(g_boardName);
+
+  // Hem normal hem bosluksuz versiyonlari dene ("ters lale" + "terslale").
+  String candidates[6];
+  for (int i = 0; i < 3; i++) {
+    candidates[i] = base[i];
+    String nospace = base[i];
+    nospace.replace(" ", "");
+    candidates[3 + i] = nospace;
+  }
 
   int best = 0;
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < 6; i++) {
     const String& cand = candidates[i];
     if (cand.length() == 0) continue;
     if (normMsg == cand) {
-      if (cand.length() > best) best = cand.length();
+      if ((int)cand.length() > best) best = cand.length();
     } else if (normMsg.startsWith(cand + " ")) {
-      if (cand.length() > best) best = cand.length();
+      if ((int)cand.length() > best) best = cand.length();
     }
   }
   return best;

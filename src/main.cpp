@@ -20,13 +20,15 @@ String g_boardMac = "";
 String g_boardName = "Eski Kart";
 String g_boardCustomName = "";
 
-// Yeni baglanan kartlara otomatik verilen Turkce tatli isimleri.
+// Yeni baglanan kartlara otomatik verilen Turkce endemik bitki isimleri.
+// (Turkiye'nin endemik flora hazinesinden; Helium tarzi IoT isimlendirme)
+// Isimler Ingilizce karakterlerle yazilir (Telegram komut uyumlulugu icin).
 // Ayni MAC her zaman ayni ismi alir (deterministik secim).
 static const char* const kRareNames[] = {
-  "Mersin Tatlısı", "Künefe", "Baklava", "Sütlaç", "Aşure",
-  "Güllaç", "Kemalpaşa", "Tulumba", "Şöbiyet", "Revani",
-  "Kazandibi", "Ekmek Kadayıfı", "Un Helvası", "İrmik Helvası", "Halka Tatlısı",
-  "Peynir Helvası", "Pişmaniye", "Lokum", "Hoşaf", "Cevizli Sucuk"
+  "Ters Lale", "Toros Sediri", "Datca Hurmasi", "Isparta Gulu", "Anzer Cicegi",
+  "Safran", "Ebe Gumusu", "Kackar Karanfili", "Salep", "Kaz Dagi Goknari",
+  "Anadolu Kestanesi", "Munzur Nergisi", "Amanos Meneksesi", "Beydagi Kekigi", "Uludag Adacayi",
+  "Nemrut Gelincigi", "Tunceli Kekigi", "Anadolu Findigi", "Girit Hurmasi", "Aladag Suseni"
 };
 static constexpr size_t kRareNameCount = sizeof(kRareNames) / sizeof(kRareNames[0]);
 
@@ -41,13 +43,13 @@ static void initBoardIdentity()
 
   if (g_boardMac == "3C:DC:75:55:3B:48") {
     g_boardId = "KART-2";
-    g_boardName = "Künefe";
+    g_boardName = "Toros Sediri";
   } else if (g_boardMac == "3C:DC:75:55:3A:D0") {
     g_boardId = "KART-1";
-    g_boardName = "Mersin Tatlısı";
+    g_boardName = "Ters Lale";
   } else {
     g_boardId = "KART-?";
-    // Bilinen listede olmayan yeni kart: MAC'ten deterministik tatli ismi.
+    // Bilinen listede olmayan yeni kart: MAC'ten deterministik endemik bitki ismi.
     g_boardName = kRareNames[mac[5] % kRareNameCount];
   }
 
@@ -456,6 +458,17 @@ void setup()
       if (g_boardCustomName.length() > 0) {
         Serial.printf("[BOARD] Ozel isim: %s\n", g_boardCustomName.c_str());
       }
+    }
+    // Otomatik atanan endemik isim ilk boot'ta kalici olarak kaydedilir.
+    // Boylece Telegram'da dogrudan isim gorunur ("Ters Lale"), KART-x degil.
+    if (g_boardCustomName.length() == 0 && g_boardName.length() > 0 &&
+        g_boardName != "Eski Kart") {
+      if (prefs.begin("board", false)) {
+        prefs.putString("name", g_boardName);
+        prefs.end();
+      }
+      g_boardCustomName = g_boardName;
+      Serial.printf("[BOARD] Otomatik isim kaydedildi: %s\n", g_boardCustomName.c_str());
     }
   }
 
