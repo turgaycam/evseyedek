@@ -2,6 +2,5 @@
     "version": "1.77",
     "url": "https://raw.githubusercontent.com/turgaycam/evseyedek/backup-new-board-ota/firmware/uzaktanotali.bin",
     "size": 1137056,
-    "sha256": "049b6d0328df492eb35325ab7aeb84886c6ea75402594fe4ec9fa618335f6879",
-    "note": "Telegram enabled, 1.59 pin map preserved"
+    "sha256": "049b6d0328df492eb35325ab7aeb84886c6ea75402594fe4ec9fa618335f6879"
 }
