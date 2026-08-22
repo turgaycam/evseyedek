@@ -165,13 +165,26 @@ static String normalizeTr(const String& in) {
   return out;
 }
 
-// Bu kartin cevap verebilecegi isimler (normalize edilmis).
-static bool isMyName(const String& nameNorm) {
-  if (nameNorm.length() == 0) return false;
-  String dn = normalizeTr(displayName());
-  String cn = normalizeTr(g_boardCustomName);
-  String bn = normalizeTr(g_boardName);
-  return (nameNorm == dn || nameNorm == cn || nameNorm == bn);
+// Mesajin basi bu kartin adiyla eslesiyor mu? (cok kelimeli isimler dahil)
+// Ornek: kart adi "Mersin Tatlısı" ise "mersin tatlısı durum" eslesir.
+// Donen deger: eslesen ismin normalize edilmis uzunlugu (0 = eslesme yok).
+static int matchMyNamePrefix(const String& normMsg) {
+  String candidates[3];
+  candidates[0] = normalizeTr(displayName());
+  candidates[1] = normalizeTr(g_boardCustomName);
+  candidates[2] = normalizeTr(g_boardName);
+
+  int best = 0;
+  for (int i = 0; i < 3; i++) {
+    const String& cand = candidates[i];
+    if (cand.length() == 0) continue;
+    if (normMsg == cand) {
+      if (cand.length() > best) best = cand.length();
+    } else if (normMsg.startsWith(cand + " ")) {
+      if (cand.length() > best) best = cand.length();
+    }
+  }
+  return best;
 }
 
 static void handleCommand(const String& rawCmd, const String& pilotState) {
@@ -213,12 +226,16 @@ static void handleCommand(const String& rawCmd, const String& pilotState) {
     String rest = (sp > 0) ? norm.substring(sp + 1) : "";
     rest.trim();
 
-    if (firstTok == "hepsi" || firstTok == "tumu" || firstTok == "herkes") {
-      target = "ALL";
-      cmd = rest;
-      norm = rest;
-    } else if (isMyName(firstTok)) {
+    // Cok kelimeli isim destegi: mesaj basi kart adiyla eslesiyor mu?
+    // Ornek: "mersin tatlısı durum" -> hedef=Mersin Tatlısı, komut="durum"
+    int nameLen = matchMyNamePrefix(norm);
+    if (nameLen > 0) {
       target = myStationCode();
+      cmd = norm.substring(nameLen);
+      cmd.trim();
+      norm = cmd;
+    } else if (firstTok == "hepsi" || firstTok == "tumu" || firstTok == "herkes") {
+      target = "ALL";
       cmd = rest;
       norm = rest;
     } else if (isValidStationCode(firstTok)) {

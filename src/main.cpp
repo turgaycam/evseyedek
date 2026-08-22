@@ -20,12 +20,13 @@ String g_boardMac = "";
 String g_boardName = "Eski Kart";
 String g_boardCustomName = "";
 
-// Yeni baglanan kartlara otomatik verilen nadir hayvan/bitki isimleri.
+// Yeni baglanan kartlara otomatik verilen Turkce tatli isimleri.
 // Ayni MAC her zaman ayni ismi alir (deterministik secim).
 static const char* const kRareNames[] = {
-  "Pangolin", "Kakapo", "Aksolotl", "Okapi", "Saola",
-  "Narval", "Quokka", "Ayayi", "Manul", "Tarsiyer",
-  "Dugong", "Fossa", "Irbis", "Rafflesia", "Sifaka"
+  "Mersin Tatlısı", "Künefe", "Baklava", "Sütlaç", "Aşure",
+  "Güllaç", "Kemalpaşa", "Tulumba", "Şöbiyet", "Revani",
+  "Kazandibi", "Ekmek Kadayıfı", "Un Helvası", "İrmik Helvası", "Halka Tatlısı",
+  "Peynir Helvası", "Pişmaniye", "Lokum", "Hoşaf", "Cevizli Sucuk"
 };
 static constexpr size_t kRareNameCount = sizeof(kRareNames) / sizeof(kRareNames[0]);
 
@@ -40,13 +41,13 @@ static void initBoardIdentity()
 
   if (g_boardMac == "3C:DC:75:55:3B:48") {
     g_boardId = "KART-2";
-    g_boardName = "Kakapo";
+    g_boardName = "Künefe";
   } else if (g_boardMac == "3C:DC:75:55:3A:D0") {
     g_boardId = "KART-1";
-    g_boardName = "Pangolin";
+    g_boardName = "Mersin Tatlısı";
   } else {
     g_boardId = "KART-?";
-    // Bilinen listede olmayan yeni kart: MAC'ten deterministik nadir isim.
+    // Bilinen listede olmayan yeni kart: MAC'ten deterministik tatli ismi.
     g_boardName = kRareNames[mac[5] % kRareNameCount];
   }
 
