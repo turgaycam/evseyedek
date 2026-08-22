@@ -12,6 +12,37 @@
 #include "ui/oled_ui.h"
 #include "io/current_sensor.h"
 #include "OTA_Manager.h"
+#include "telegram_notify.h"
+
+// Kart kimligi (MAC tabanli)
+String g_boardId = "KART-1";
+String g_boardMac = "";
+String g_boardName = "Eski Kart";
+String g_boardCustomName = "";
+
+static void initBoardIdentity()
+{
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  g_boardMac = String(macStr);
+
+  if (g_boardMac == "3C:DC:75:55:3B:48") {
+    g_boardId = "KART-2";
+    g_boardName = "Yeni Kart";
+  } else if (g_boardMac == "XX:XX:XX:XX:XX:XX") {
+    g_boardId = "KART-1";
+    g_boardName = "Eski Kart";
+  } else {
+    g_boardId = "KART-?";
+    g_boardName = "Bilinmeyen Kart";
+  }
+
+  Serial.printf("[BOARD] ID=%s MAC=%s NAME=%s\n",
+                g_boardId.c_str(), g_boardMac.c_str(), g_boardName.c_str());
+}
 
 static constexpr char kOtaManifestUrl[] =
   "https://raw.githubusercontent.com/turgaycam/evseyedek/backup-new-board-ota/version.json";
@@ -404,6 +435,19 @@ void setup()
   Serial.begin(115200);
   delay(200);
   Serial.println("BOOT OK");
+  initBoardIdentity();
+
+  {
+    Preferences prefs;
+    if (prefs.begin("board", true)) {
+      g_boardCustomName = prefs.getString("name", "");
+      prefs.end();
+      if (g_boardCustomName.length() > 0) {
+        Serial.printf("[BOARD] Ozel isim: %s\n", g_boardCustomName.c_str());
+      }
+    }
+  }
+
   initFactoryButton();
   handleRescueFallbackIfNeeded();
 
@@ -472,6 +516,11 @@ void loop()
   auto m = pilot_get();
 
   bool staOk = (WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0);
+
+  if (staOk) {
+    telegram_notify_connect(m.stateStable);
+    telegram_loop(m.stateStable);
+  }
 
   // Kablo: A değilse takılı kabul
   bool cableConnected = (m.stateStable != "A");

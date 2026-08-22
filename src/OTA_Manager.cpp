@@ -586,8 +586,12 @@ static void handleUpdateCheck() {
     ctx.lastStatus = "update_available";
     Serial.printf("[OTA] Yeni surum bulunuyor -> %s\n", m.url.c_str());
     if (!ctx.installRequested) {
+      ctx.installRequested = true;
       ctx.lastUpdateOk = true;
-      ctx.lastError = "Admin onayi bekleniyor";
+      ctx.lastError = "Otomatik yukleme baslatildi";
+      Serial.println("[OTA] Otomatik install tetiklendi; yeni surum indiriliyor...");
+    }
+    if (!ctx.installRequested) {
       return;
     }
     ctx.installRequested = false;
