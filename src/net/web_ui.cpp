@@ -1338,6 +1338,7 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
 
     <div class="sep"></div>
     <h2>CP KALIBRASYON</h2>
+    <div class="small">Arac yokken (State A) canli CP high 12.00V'a otomatik olceklenir. Farkli guc kaynagi 12.7V gosterse bile divider kendisi ayarlanir.</div>
     <div class="kv"><div class="k">Divider</div><div class="v"><input id="div" onfocus="p()" onblur="r()"></div></div>
     <div class="kv"><div class="k">TH_B / TH_C</div><div class="v grid2"><input id="thb" onfocus="p()" onblur="r()"><input id="thc" onfocus="p()" onblur="r()"></div></div>
     <div class="kv"><div class="k">TH_D / TH_E</div><div class="v grid2"><input id="thd" onfocus="p()" onblur="r()"><input id="the" onfocus="p()" onblur="r()"></div></div>
@@ -2481,7 +2482,7 @@ static void handleCalibApply() {
     saveCurrentLimitSetting();
   }
   if (server.hasArg("div")) {
-    CP_DIVIDER_RATIO = clampFloatArg(server.arg("div"), 0.1f, 20.0f, CP_DIVIDER_RATIO);
+    pilot_set_divider(clampFloatArg(server.arg("div"), 0.1f, 20.0f, CP_DIVIDER_RATIO));
   }
   if (server.hasArg("thb")) {
     TH_B_MIN = clampFloatArg(server.arg("thb"), 0.0f, 15.0f, TH_B_MIN);

@@ -1,6 +1,8 @@
 #include "pilot.h"
 #include "app_pins.h"
 #include "app_config.h"
+#include <Preferences.h>
+#include <math.h>
 
 // CP state cikarma ve PWM uygulama modulu.
 // Esik degerleri main.cpp'de tutulur, burada yorumlanir.
@@ -14,6 +16,102 @@ static float  adcHigh = 0.0f, adcLow = 0.0f;
 static float  cpHighVolt = 0.0f, cpLowVolt = 0.0f;
 static String measuredStateRaw = "A";
 static String measuredState    = "A";
+
+static constexpr float kCpStateANomV = 12.0f;
+static constexpr float kCpTuneMinV = 11.0f;
+static constexpr float kCpTuneMaxV = 14.8f;
+static constexpr float kCpTuneDeadbandV = 0.12f;
+static constexpr float kCpTuneMinAdcV = 1.6f;
+static constexpr float kCpTuneMaxAdcV = 3.3f;
+static constexpr float kCpTuneMinRatio = 2.0f;
+static constexpr float kCpTuneMaxRatio = 8.0f;
+static constexpr uint8_t kCpTuneSamples = 10;
+static constexpr uint32_t kCpTuneMinUptimeMs = 8000;
+static constexpr uint32_t kCpTuneSaveMinMs = 30000;
+
+static float s_tuneSum = 0.0f;
+static uint8_t s_tuneCount = 0;
+static uint32_t s_lastTuneSaveMs = 0;
+
+static float clampDivider(float ratio)
+{
+  if (!isfinite(ratio)) return CP_DIVIDER_RATIO;
+  if (ratio < kCpTuneMinRatio) return kCpTuneMinRatio;
+  if (ratio > kCpTuneMaxRatio) return kCpTuneMaxRatio;
+  return ratio;
+}
+
+static void saveDivider(float ratio)
+{
+  Preferences prefs;
+  if (!prefs.begin("cpcfg", false)) return;
+  prefs.putFloat("div", ratio);
+  prefs.end();
+}
+
+static void loadDivider()
+{
+  Preferences prefs;
+  if (!prefs.begin("cpcfg", true)) return;
+  float stored = prefs.getFloat("div", 0.0f);
+  prefs.end();
+  if (stored >= kCpTuneMinRatio && stored <= kCpTuneMaxRatio && isfinite(stored)) {
+    CP_DIVIDER_RATIO = stored;
+    Serial.printf("[CP] Kayitli divider: %.3f\n", CP_DIVIDER_RATIO);
+  }
+}
+
+void pilot_set_divider(float ratio)
+{
+  CP_DIVIDER_RATIO = clampDivider(ratio);
+  saveDivider(CP_DIVIDER_RATIO);
+  s_tuneSum = 0.0f;
+  s_tuneCount = 0;
+}
+
+static void autotuneStateA(float cpHigh, float adcHigh)
+{
+  if (pwmEnabled) {
+    s_tuneSum = 0.0f;
+    s_tuneCount = 0;
+    return;
+  }
+  if (measuredState != "A") {
+    s_tuneSum = 0.0f;
+    s_tuneCount = 0;
+    return;
+  }
+  if (millis() < kCpTuneMinUptimeMs) return;
+  if (!isfinite(cpHigh) || !isfinite(adcHigh)) return;
+  if (adcHigh < kCpTuneMinAdcV || adcHigh > kCpTuneMaxAdcV) return;
+  if (cpHigh < kCpTuneMinV || cpHigh > kCpTuneMaxV) return;
+
+  const float errorV = fabsf(cpHigh - kCpStateANomV);
+  if (errorV <= kCpTuneDeadbandV) {
+    s_tuneSum = 0.0f;
+    s_tuneCount = 0;
+    return;
+  }
+
+  s_tuneSum += cpHigh;
+  s_tuneCount++;
+  if (s_tuneCount < kCpTuneSamples) return;
+
+  const float avgV = s_tuneSum / (float)s_tuneCount;
+  s_tuneSum = 0.0f;
+  s_tuneCount = 0;
+  if (avgV < kCpTuneMinV || avgV > kCpTuneMaxV) return;
+
+  const float next = clampDivider(CP_DIVIDER_RATIO * (kCpStateANomV / avgV));
+  if (fabsf(next - CP_DIVIDER_RATIO) < 0.01f) return;
+  if ((millis() - s_lastTuneSaveMs) < kCpTuneSaveMinMs && s_lastTuneSaveMs != 0) return;
+
+  Serial.printf("[CP] Otomatik divider: %.3f -> %.3f (olculen %.2fV -> 12.00V)\n",
+                CP_DIVIDER_RATIO, next, avgV);
+  CP_DIVIDER_RATIO = next;
+  saveDivider(next);
+  s_lastTuneSaveMs = millis();
+}
 
 // CP high seviyesine bakarak IEC state karari burada verilir.
 // TH_* ve margin degerleri web panelinden degistirilince bu fonksiyonu etkiler.
@@ -51,6 +149,8 @@ static String decideStateHysteresis(float v, const String& cur)
 
 void pilot_init()
 {
+  loadDivider();
+
   // CP PWM cikisi ve ADC girisi ayni moduldedir.
   analogReadResolution(12);
   pinMode(CP_ADC_PIN, INPUT);
@@ -110,6 +210,8 @@ void pilot_update()
   else { cnt = 1; last = measuredStateRaw; }
 
   if (cnt >= stableCount) measuredState = measuredStateRaw;
+
+  autotuneStateA(cpHighVolt, adcHigh);
 }
 
 PilotMeasurements pilot_get()
