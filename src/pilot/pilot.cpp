@@ -17,21 +17,8 @@ static float  cpHighVolt = 0.0f, cpLowVolt = 0.0f;
 static String measuredStateRaw = "A";
 static String measuredState    = "A";
 
-static constexpr float kCpStateANomV = 12.0f;
-static constexpr float kCpTuneMinV = 11.0f;
-static constexpr float kCpTuneMaxV = 14.8f;
-static constexpr float kCpTuneDeadbandV = 0.12f;
-static constexpr float kCpTuneMinAdcV = 1.6f;
-static constexpr float kCpTuneMaxAdcV = 3.3f;
 static constexpr float kCpTuneMinRatio = 2.0f;
 static constexpr float kCpTuneMaxRatio = 8.0f;
-static constexpr uint8_t kCpTuneSamples = 10;
-static constexpr uint32_t kCpTuneMinUptimeMs = 8000;
-static constexpr uint32_t kCpTuneSaveMinMs = 30000;
-
-static float s_tuneSum = 0.0f;
-static uint8_t s_tuneCount = 0;
-static uint32_t s_lastTuneSaveMs = 0;
 
 static float clampDivider(float ratio)
 {
@@ -49,68 +36,63 @@ static void saveDivider(float ratio)
   prefs.end();
 }
 
-static void loadDivider()
+static bool validThresh(float v)
+{
+  return isfinite(v) && v >= 0.0f && v <= 15.0f;
+}
+
+static void loadCpUserCal()
 {
   Preferences prefs;
   if (!prefs.begin("cpcfg", true)) return;
-  float stored = prefs.getFloat("div", 0.0f);
-  prefs.end();
-  if (stored >= kCpTuneMinRatio && stored <= kCpTuneMaxRatio && isfinite(stored)) {
-    CP_DIVIDER_RATIO = stored;
-    Serial.printf("[CP] Kayitli divider: %.3f\n", CP_DIVIDER_RATIO);
+
+  float storedDiv = prefs.getFloat("div", 0.0f);
+  if (storedDiv >= kCpTuneMinRatio && storedDiv <= kCpTuneMaxRatio && isfinite(storedDiv)) {
+    CP_DIVIDER_RATIO = storedDiv;
   }
+
+  float thb = prefs.getFloat("thb", -1.0f);
+  float thc = prefs.getFloat("thc", -1.0f);
+  float thd = prefs.getFloat("thd", -1.0f);
+  float the = prefs.getFloat("the", -1.0f);
+  float tha = prefs.getFloat("tha", -1.0f);
+  float mUp = prefs.getFloat("mUp", -1.0f);
+  float mDn = prefs.getFloat("mDn", -1.0f);
+  int stb = prefs.getInt("stb", -1);
+
+  if (validThresh(thb)) TH_B_MIN = thb;
+  if (validThresh(thc)) TH_C_MIN = thc;
+  if (validThresh(thd)) TH_D_MIN = thd;
+  if (validThresh(the)) TH_E_MIN = the;
+  if (validThresh(tha)) TH_A_MIN = tha;
+  if (mUp >= 0.0f && mUp <= 2.0f) marginUp = mUp;
+  if (mDn >= 0.0f && mDn <= 2.0f) marginDown = mDn;
+  if (stb >= 1 && stb <= 50) stableCount = stb;
+
+  prefs.end();
+  Serial.printf("[CP] Kullanici kalibrasyonu: div=%.3f TH B/C/D/E=%.2f/%.2f/%.2f/%.2f stb=%d\n",
+                CP_DIVIDER_RATIO, TH_B_MIN, TH_C_MIN, TH_D_MIN, TH_E_MIN, stableCount);
 }
 
 void pilot_set_divider(float ratio)
 {
   CP_DIVIDER_RATIO = clampDivider(ratio);
   saveDivider(CP_DIVIDER_RATIO);
-  s_tuneSum = 0.0f;
-  s_tuneCount = 0;
 }
 
-static void autotuneStateA(float cpHigh, float adcHigh)
+void pilot_save_state_thresholds()
 {
-  if (pwmEnabled) {
-    s_tuneSum = 0.0f;
-    s_tuneCount = 0;
-    return;
-  }
-  if (measuredState != "A") {
-    s_tuneSum = 0.0f;
-    s_tuneCount = 0;
-    return;
-  }
-  if (millis() < kCpTuneMinUptimeMs) return;
-  if (!isfinite(cpHigh) || !isfinite(adcHigh)) return;
-  if (adcHigh < kCpTuneMinAdcV || adcHigh > kCpTuneMaxAdcV) return;
-  if (cpHigh < kCpTuneMinV || cpHigh > kCpTuneMaxV) return;
-
-  const float errorV = fabsf(cpHigh - kCpStateANomV);
-  if (errorV <= kCpTuneDeadbandV) {
-    s_tuneSum = 0.0f;
-    s_tuneCount = 0;
-    return;
-  }
-
-  s_tuneSum += cpHigh;
-  s_tuneCount++;
-  if (s_tuneCount < kCpTuneSamples) return;
-
-  const float avgV = s_tuneSum / (float)s_tuneCount;
-  s_tuneSum = 0.0f;
-  s_tuneCount = 0;
-  if (avgV < kCpTuneMinV || avgV > kCpTuneMaxV) return;
-
-  const float next = clampDivider(CP_DIVIDER_RATIO * (kCpStateANomV / avgV));
-  if (fabsf(next - CP_DIVIDER_RATIO) < 0.01f) return;
-  if ((millis() - s_lastTuneSaveMs) < kCpTuneSaveMinMs && s_lastTuneSaveMs != 0) return;
-
-  Serial.printf("[CP] Otomatik divider: %.3f -> %.3f (olculen %.2fV -> 12.00V)\n",
-                CP_DIVIDER_RATIO, next, avgV);
-  CP_DIVIDER_RATIO = next;
-  saveDivider(next);
-  s_lastTuneSaveMs = millis();
+  Preferences prefs;
+  if (!prefs.begin("cpcfg", false)) return;
+  prefs.putFloat("thb", TH_B_MIN);
+  prefs.putFloat("thc", TH_C_MIN);
+  prefs.putFloat("thd", TH_D_MIN);
+  prefs.putFloat("the", TH_E_MIN);
+  prefs.putFloat("tha", TH_A_MIN);
+  prefs.putFloat("mUp", marginUp);
+  prefs.putFloat("mDn", marginDown);
+  prefs.putInt("stb", stableCount);
+  prefs.end();
 }
 
 // CP high seviyesine bakarak IEC state karari burada verilir.
@@ -149,7 +131,7 @@ static String decideStateHysteresis(float v, const String& cur)
 
 void pilot_init()
 {
-  loadDivider();
+  loadCpUserCal();
 
   // CP PWM cikisi ve ADC girisi ayni moduldedir.
   analogReadResolution(12);
@@ -210,8 +192,6 @@ void pilot_update()
   else { cnt = 1; last = measuredStateRaw; }
 
   if (cnt >= stableCount) measuredState = measuredStateRaw;
-
-  autotuneStateA(cpHighVolt, adcHigh);
 }
 
 PilotMeasurements pilot_get()

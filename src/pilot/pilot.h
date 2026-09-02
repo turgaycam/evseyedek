@@ -18,6 +18,7 @@ void pilot_apply_pwm();
 void pilot_update();
 PilotMeasurements pilot_get();
 void pilot_set_divider(float ratio);
+void pilot_save_state_thresholds();
 
 // PWM kontrolü (web dokunmayacak ama main kullanacak)
 extern bool pwmEnabled;

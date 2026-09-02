@@ -1338,7 +1338,7 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
 
     <div class="sep"></div>
     <h2>CP KALIBRASYON</h2>
-    <div class="small">Arac yokken (State A) canli CP high 12.00V'a otomatik olceklenir. Farkli guc kaynagi 12.7V gosterse bile divider kendisi ayarlanir.</div>
+    <div class="small">State gecis esikleri (TH_B/C/D/E, stable) otomatik degismez. Bunlari sen ayarlarsin; UYGULA ile kalici kaydedilir. Divider da sadece senin girdigin degerdir.</div>
     <div class="kv"><div class="k">Divider</div><div class="v"><input id="div" onfocus="p()" onblur="r()"></div></div>
     <div class="kv"><div class="k">TH_B / TH_C</div><div class="v grid2"><input id="thb" onfocus="p()" onblur="r()"><input id="thc" onfocus="p()" onblur="r()"></div></div>
     <div class="kv"><div class="k">TH_D / TH_E</div><div class="v grid2"><input id="thd" onfocus="p()" onblur="r()"><input id="the" onfocus="p()" onblur="r()"></div></div>
@@ -2495,6 +2495,10 @@ static void handleCalibApply() {
   }
   if (server.hasArg("the")) {
     TH_E_MIN = clampFloatArg(server.arg("the"), 0.0f, 15.0f, TH_E_MIN);
+  }
+  if (server.hasArg("s") || server.hasArg("thb") || server.hasArg("thc") ||
+      server.hasArg("thd") || server.hasArg("the")) {
+    pilot_save_state_thresholds();
   }
   if (server.hasArg("icalA")) {
     calA = clampFloatArg(server.arg("icalA"), 1.0f, 80.0f, calA);
