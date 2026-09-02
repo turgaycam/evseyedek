@@ -19,6 +19,18 @@ static String measuredState    = "A";
 
 static constexpr float kCpTuneMinRatio = 2.0f;
 static constexpr float kCpTuneMaxRatio = 8.0f;
+static constexpr float kCpNomA = 12.0f;
+static constexpr float kCpTuneMinAdc = 1.80f;
+static constexpr float kCpTuneMaxAdc = 3.20f;
+static constexpr float kCpTuneDcSpreadMax = 0.12f;
+static constexpr uint8_t kCpTuneSamples = 6;
+static constexpr uint32_t kCpTuneMinUptimeMs = 3000;
+static constexpr uint32_t kCpTuneRetryMs = 4000;
+
+static float s_tuneAdcSum = 0.0f;
+static uint8_t s_tuneCount = 0;
+static uint32_t s_lastTuneMs = 0;
+static bool s_userLockedDivider = false;
 
 static float clampDivider(float ratio)
 {
@@ -34,6 +46,46 @@ static void saveDivider(float ratio)
   if (!prefs.begin("cpcfg", false)) return;
   prefs.putFloat("div", ratio);
   prefs.end();
+}
+
+static void autotuneDividerTo12v(float adcH, float adcL)
+{
+  if (s_userLockedDivider) return;
+  if (pwmEnabled) {
+    s_tuneAdcSum = 0.0f;
+    s_tuneCount = 0;
+    return;
+  }
+  if (measuredState != "A") {
+    s_tuneAdcSum = 0.0f;
+    s_tuneCount = 0;
+    return;
+  }
+  if (millis() < kCpTuneMinUptimeMs) return;
+  if (!isfinite(adcH) || !isfinite(adcL)) return;
+  if (adcH < kCpTuneMinAdc || adcH > kCpTuneMaxAdc) return;
+  if (fabsf(adcH - adcL) > kCpTuneDcSpreadMax) return;
+
+  s_tuneAdcSum += adcH;
+  s_tuneCount++;
+  if (s_tuneCount < kCpTuneSamples) return;
+
+  const float avgAdc = s_tuneAdcSum / (float)s_tuneCount;
+  s_tuneAdcSum = 0.0f;
+  s_tuneCount = 0;
+  if (avgAdc < kCpTuneMinAdc || avgAdc > kCpTuneMaxAdc) return;
+
+  const float next = clampDivider(kCpNomA / avgAdc);
+  const float shown = avgAdc * CP_DIVIDER_RATIO;
+  if (fabsf(shown - kCpNomA) <= 0.12f) return;
+  if (fabsf(next - CP_DIVIDER_RATIO) < 0.008f) return;
+  if (s_lastTuneMs != 0 && (millis() - s_lastTuneMs) < kCpTuneRetryMs) return;
+
+  Serial.printf("[CP] Divider otomatik: %.3f -> %.3f (ADC %.3fV, %.2fV -> 12.00V). TH esiklerine dokunulmadi.\n",
+                CP_DIVIDER_RATIO, next, avgAdc, shown);
+  CP_DIVIDER_RATIO = next;
+  saveDivider(next);
+  s_lastTuneMs = millis();
 }
 
 static bool validThresh(float v)
@@ -78,6 +130,9 @@ void pilot_set_divider(float ratio)
 {
   CP_DIVIDER_RATIO = clampDivider(ratio);
   saveDivider(CP_DIVIDER_RATIO);
+  s_userLockedDivider = true;
+  s_tuneAdcSum = 0.0f;
+  s_tuneCount = 0;
 }
 
 void pilot_save_state_thresholds()
@@ -178,6 +233,8 @@ void pilot_update()
 
   adcHigh = (maxRaw * 3.3f) / 4095.0f;
   adcLow  = (minRaw * 3.3f) / 4095.0f;
+
+  autotuneDividerTo12v(adcHigh, adcLow);
 
   cpHighVolt = adcHigh * CP_DIVIDER_RATIO;
   cpLowVolt  = adcLow  * CP_DIVIDER_RATIO;

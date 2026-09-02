@@ -1338,7 +1338,7 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
 
     <div class="sep"></div>
     <h2>CP KALIBRASYON</h2>
-    <div class="small">State gecis esikleri (TH_B/C/D/E, stable) otomatik degismez. Bunlari sen ayarlarsin; UYGULA ile kalici kaydedilir. Divider da sadece senin girdigin degerdir.</div>
+    <div class="small">State A'da (arac yok, PWM kapali) divider otomatik 12.00V'a cekilir. TH_B/C/D/E ve stable count'a dokunulmaz; onlar senin kalici ayarin.</div>
     <div class="kv"><div class="k">Divider</div><div class="v"><input id="div" onfocus="p()" onblur="r()"></div></div>
     <div class="kv"><div class="k">TH_B / TH_C</div><div class="v grid2"><input id="thb" onfocus="p()" onblur="r()"><input id="thc" onfocus="p()" onblur="r()"></div></div>
     <div class="kv"><div class="k">TH_D / TH_E</div><div class="v grid2"><input id="thd" onfocus="p()" onblur="r()"><input id="the" onfocus="p()" onblur="r()"></div></div>
@@ -2482,7 +2482,10 @@ static void handleCalibApply() {
     saveCurrentLimitSetting();
   }
   if (server.hasArg("div")) {
-    pilot_set_divider(clampFloatArg(server.arg("div"), 0.1f, 20.0f, CP_DIVIDER_RATIO));
+    float requested = clampFloatArg(server.arg("div"), 0.1f, 20.0f, CP_DIVIDER_RATIO);
+    if (fabsf(requested - CP_DIVIDER_RATIO) > 0.02f) {
+      pilot_set_divider(requested);
+    }
   }
   if (server.hasArg("thb")) {
     TH_B_MIN = clampFloatArg(server.arg("thb"), 0.0f, 15.0f, TH_B_MIN);
