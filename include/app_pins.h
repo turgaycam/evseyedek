@@ -31,7 +31,7 @@
 // Geri uyumluluk (eski isim)
 #define BLUE_LED_PIN     STATE_LED_PIN
 
-// Yeni kartta latch SET/RESET yok; kontaktor GPIO4 ile surekli seviye surulur.
+// Eski latch kartlari icin tutulur. Bu PCB'de kullanilmaz (GPIO7=L3, GPIO16=PP).
 #define MOSFET_RESET_PIN 7
 #define MOSFET_SET_PIN   16
 

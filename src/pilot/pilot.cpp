@@ -83,7 +83,8 @@ void pilot_apply_pwm()
 void pilot_update()
 {
   // Basit min/max yaklasimi ile CP sinyalinin high/low seviyeleri olculur.
-  const int N = 200;
+  // 1 kHz PWM periyodu ~1 ms; 120 ornek yaklasik bir periyodu kaplar.
+  const int N = 120;
   int minRaw = 4095;
   int maxRaw = 0;
 

@@ -540,15 +540,7 @@ void loop()
   auto m = pilot_get();
 
   bool staOk = (WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0);
-
-  if (staOk) {
-    telegram_notify_connect(m.stateStable);
-    telegram_notify_state_change(m.stateStable);
-    telegram_notify_wifi_link(true);
-    telegram_loop(m.stateStable);
-  } else {
-    telegram_notify_wifi_link(false);
-  }
+  telegram_loop(m.stateStable, staOk);
 
   // Kablo: A değilse takılı kabul
   bool cableConnected = (m.stateStable != "A");
@@ -739,10 +731,11 @@ void loop()
                   pwmDutyPercent);
   }
 
-  // Manuel stop modunda latch pulse takibini durdur.
+#if RELAY_USE_LATCH_PINS
   if (g_chargeMode != 2) {
     relay_handle_state_pulse(m.stateStable);
   }
+#endif
 
   // Son role karari burada verilir.
   relay_update_auto(m.stateStable, pwmEnabled, pwmDutyPercent);

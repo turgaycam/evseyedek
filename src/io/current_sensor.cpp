@@ -230,7 +230,9 @@ void current_sensor_loop() {
     static uint8_t phase_index = 0;
     const uint32_t now = millis();
 
-    if (now - last_read < 400) return;
+    const bool idle = (last_irms_a + last_irms_b + last_irms_c) < 0.5f;
+    const uint32_t intervalMs = idle ? 800 : 400;
+    if (now - last_read < intervalMs) return;
     last_read = now;
 
     const int sampleCount = 180;

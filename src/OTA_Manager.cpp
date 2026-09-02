@@ -10,6 +10,7 @@
 #include <mbedtls/sha256.h>
 
 #include "net/web_ui.h"
+#include "io/relay.h"
 
 namespace {
 struct OtaContext {
@@ -589,9 +590,14 @@ static void handleUpdateCheck() {
       ctx.installRequested = true;
       ctx.lastUpdateOk = true;
       ctx.lastError = "Otomatik yukleme baslatildi";
-      Serial.println("[OTA] Otomatik install tetiklendi; yeni surum indiriliyor...");
+      Serial.println("[OTA] Otomatik install tetiklendi; yeni surum indirilecek");
     }
-    if (!ctx.installRequested) {
+    if (relay_get()) {
+      ctx.lastError = "Sarj sirasinda OTA ertelendi";
+      Serial.println("[OTA] Kontaktör açık, indirme seans bitince denenecek");
+      if (ctx.checkIntervalMs > 15000UL) {
+        ctx.lastCheckMs = millis() - (ctx.checkIntervalMs - 15000UL);
+      }
       return;
     }
     ctx.installRequested = false;

@@ -2,6 +2,8 @@
 #include "app_pins.h"
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <math.h>
+#include <string.h>
 
 // OLED arayuz modulu.
 // Bu dosyanin ic yapisi:
@@ -260,6 +262,42 @@ void oled_draw(const String& stateStable,
                bool cableConnected)
 {
   if (!oledAvailable) return;
+
+  (void)relayOn;
+  (void)staConnected;
+  (void)cableConnected;
+
+  static char lastState[4] = "";
+  static int lastIa = -1;
+  static int lastIb = -1;
+  static int lastIc = -1;
+  static int lastW = -1;
+  static int lastWh = -1;
+  static uint32_t lastSec = 0xFFFFFFFFu;
+  static uint32_t lastForcedMs = 0;
+
+  const int ia10 = (int)lroundf(ia * 10.0f);
+  const int ib10 = (int)lroundf(ib * 10.0f);
+  const int ic10 = (int)lroundf(ic * 10.0f);
+  const int w10 = (int)lroundf(powerW / 100.0f);
+  const int e100 = (int)lroundf(energyKwh * 100.0f);
+  const bool stateChanged = (stateStable != lastState);
+  const bool dataChanged =
+      stateChanged || ia10 != lastIa || ib10 != lastIb || ic10 != lastIc ||
+      w10 != lastW || e100 != lastWh || chargeSeconds != lastSec;
+  const bool blinkRefresh = ((millis() - lastForcedMs) >= 400);
+
+  if (!dataChanged && !blinkRefresh) return;
+
+  strncpy(lastState, stateStable.c_str(), sizeof(lastState) - 1);
+  lastState[sizeof(lastState) - 1] = '\0';
+  lastIa = ia10;
+  lastIb = ib10;
+  lastIc = ic10;
+  lastW = w10;
+  lastWh = e100;
+  lastSec = chargeSeconds;
+  lastForcedMs = millis();
 
   // Bu fonksiyon yalnizca cizim yapar; karar mantigi main.cpp tarafinda uretilir.
   u8g2.clearBuffer();
