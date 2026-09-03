@@ -12,6 +12,7 @@
 
 #include "app_config.h"
 #include "OTA_Manager.h"
+#include "app_log.h"
 
 #ifndef TELEGRAM_BOT_TOKEN
 #define TELEGRAM_BOT_TOKEN ""
@@ -303,10 +304,11 @@ static void handleCommand(const String& rawCmd, const String& pilotState) {
     norm.startsWith("durum") || norm.startsWith("bilgi") ||
     norm.startsWith("guncelle") || norm.startsWith("geri al") ||
     norm.startsWith("gerial") || norm.startsWith("yeniden baslat") ||
-    norm.startsWith("isim") ||
+    norm.startsWith("isim") || norm.startsWith("log") || norm.startsWith("kayit") ||
     norm.startsWith("/status") || norm.startsWith("/info") ||
     norm.startsWith("/update") || norm.startsWith("/rollback") ||
-    norm.startsWith("/restart") || norm.startsWith("/name");
+    norm.startsWith("/restart") || norm.startsWith("/name") ||
+    norm.startsWith("/log");
   if (needsTarget && target.length() == 0) {
     enqueueMessage(
       displayName() + "\n"
@@ -354,6 +356,7 @@ static void handleCommand(const String& rawCmd, const String& pilotState) {
       displayName() + " guncelle - Guncelleme baslat\n" +
       displayName() + " geri al - Onceki firmware\n" +
       displayName() + " yeniden baslat - Restart\n" +
+      displayName() + " log - Son kayitlar\n" +
       displayName() + " isim <yeni isim> - Isim degistir");
   } else if (norm == "durum" || norm == "/status") {
     String msg = displayName() + "\n";
@@ -371,6 +374,13 @@ static void handleCommand(const String& rawCmd, const String& pilotState) {
     msg += "Partition: " + String(OTA_Manager::runningPartitionLabel()) + "\n";
     msg += "Image: " + String(OTA_Manager::runningImageStateLabel()) + "\n";
     msg += "Remote: " + String(OTA_Manager::lastRemoteVersion());
+    enqueueMessage(msg);
+  } else if (norm == "log" || norm == "kayit" || norm == "loglar" ||
+             norm == "/log" || norm == "/logs") {
+    char dump[360];
+    app_log_dump(dump, sizeof(dump), 8);
+    String msg = displayName() + " log\n";
+    msg += (dump[0] ? dump : "(log bos)\n");
     enqueueMessage(msg);
   } else if (norm == "guncelle" || norm == "guncelleme" || norm == "/update") {
     String remote = OTA_Manager::lastRemoteVersion();

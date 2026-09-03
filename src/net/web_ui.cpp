@@ -20,6 +20,7 @@
 #include "io/relay.h"
 
 #include "io/current_sensor.h"
+#include "app_log.h"
 
 // Bu dosya 4 ana parcadan olusur:
 // 1) Wi-Fi / OTA yardimcilari
@@ -1318,6 +1319,11 @@ button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#
     <div class="kv"><div class="k">ADC High / Low</div><div class="v mono"><span id="aH">-</span> / <span id="aL">-</span></div></div>
     <div class="kv"><div class="k">PP GPIO16</div><div class="v mono"><span id="ppV">-</span> / <span id="ppRaw">-</span></div></div>
     <div class="sep"></div>
+    <h2>UZAKTAN LOG</h2>
+    <div class="small">Son satirlar RAM'de tutulur. Telegram: kart adi + log</div>
+    <pre id="logBox" style="max-height:220px;overflow:auto;background:#070d18;padding:10px;border-radius:10px;font-size:11px;line-height:1.4;white-space:pre-wrap;">-</pre>
+    <div class="btns"><button onclick="fetchLogs()">LOG YENILE</button></div>
+    <div class="sep"></div>
     <h2>KULLANICI EKRANI OZEL CSS</h2>
     <div class="small">Buraya yazdigin CSS, kullanici ekranindaki tum elemanlari ezebilir. Ornek: `body{background:#000}` veya `.metricCard{border-radius:36px}`</div>
     <div class="kv"><div class="k">Ozel CSS</div><div class="v"><textarea id="userCssSet" onfocus="p()" onblur="r()" placeholder=".metricCard{outline:1px solid red}">__USER_CSS_TEXT__</textarea></div></div>
@@ -1702,6 +1708,12 @@ function fillClampMid(){
   }
   alert('Offset A/B/C alanlari pens faz degerlerine gore dolduruldu.');
 }
+function fetchLogs(){
+  fetch('/logs', {cache:'no-store'}).then(r=>r.text()).then(t=>{
+    const el=document.getElementById('logBox');
+    if(el) el.textContent = t && t.length ? t : '(bos)';
+  }).catch(()=>{});
+}
 function pull(force=false){
   if(paused && !force) return;
   fetch('/status', {cache:'no-store'}).then(r => r.json()).then(d => {
@@ -1810,7 +1822,9 @@ function applyCal(){
 }
 applyPageMode();
 setInterval(() => pull(false), 3000);
+setInterval(() => { if((PAGE_MODE||'admin')==='admin') fetchLogs(); }, 4000);
 pull(true);
+fetchLogs();
 </script>
 
 </body></html>
@@ -1840,11 +1854,10 @@ static void setupWiFi() {
         Serial.print("[WiFi] Connected SSID: ");
         Serial.println(WiFi.SSID());
       } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-        Serial.print("[WiFi] Disconnected, reason: ");
-        Serial.println((int)info.wifi_sta_disconnected.reason);
+        LOGW("[WiFi] koptu reason=%d", (int)info.wifi_sta_disconnected.reason);
       } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-        Serial.print("[WiFi] Got IP: ");
-        Serial.println(WiFi.localIP());
+        IPAddress ip = WiFi.localIP();
+        LOGI("[WiFi] IP %u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
       }
     });
   }
@@ -1905,6 +1918,14 @@ static void handleAdmin() { sendMainPage("admin"); }
 static void handleCalibrationPage() { sendMainPage("calibration"); }
 static void handleWifiPage() { sendMainPage("wifi"); }
 static void handlePing() { noteWebActivity(); noteHttpResponseSent(); server.send(200, "text/plain", "OK"); }
+static void handleLogs() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
+  static char buf[2048];
+  app_log_dump(buf, sizeof(buf), 40);
+  noteHttpResponseSent();
+  server.send(200, "text/plain; charset=utf-8", buf[0] ? buf : "(log bos)\n");
+}
 static void handleManifest() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "application/manifest+json", MANIFEST_JSON); }
 static void handleServiceWorker() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "application/javascript", SERVICE_WORKER_JS); }
 static void handleAppIcon() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "image/svg+xml", APP_ICON_SVG); }
@@ -2654,6 +2675,7 @@ void web_init() {
   server.on("/update", HTTP_GET, handleManualUpdatePage);
   server.on("/update", HTTP_POST, handleManualUpdateResult, handleManualUpdateUpload);
   server.on("/ping", HTTP_GET, handlePing);
+  server.on("/logs", HTTP_GET, handleLogs);
   server.on("/manifest.json", HTTP_GET, handleManifest);
   server.on("/sw.js", HTTP_GET, handleServiceWorker);
   server.on("/app-icon.svg", HTTP_GET, handleAppIcon);

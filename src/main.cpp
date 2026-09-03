@@ -13,6 +13,8 @@
 #include "io/current_sensor.h"
 #include "OTA_Manager.h"
 #include "telegram_notify.h"
+#include "OTA_Manager.h"
+#include "app_log.h"
 
 // Kart kimligi (MAC tabanli)
 String g_boardId = "KART-1";
@@ -53,8 +55,8 @@ static void initBoardIdentity()
     g_boardName = kRareNames[mac[5] % kRareNameCount];
   }
 
-  Serial.printf("[BOARD] ID=%s MAC=%s NAME=%s\n",
-                g_boardId.c_str(), g_boardMac.c_str(), g_boardName.c_str());
+  LOGI("[BOARD] ID=%s MAC=%s NAME=%s",
+       g_boardId.c_str(), g_boardMac.c_str(), g_boardName.c_str());
 }
 
 static constexpr char kOtaManifestUrl[] =
@@ -447,7 +449,7 @@ void setup()
   // 1) web/OTA, 2) OLED, 3) sensorler, 4) role, 5) pilot
   Serial.begin(115200);
   delay(200);
-  Serial.println("BOOT OK");
+  LOGI("BOOT OK FW=%s", CURRENT_VERSION);
   initBoardIdentity();
 
   {

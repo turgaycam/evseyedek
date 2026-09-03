@@ -2,6 +2,7 @@
 #include "app_pins.h"
 #include "app_config.h"
 #include <Preferences.h>
+#include "app_log.h"
 #include <math.h>
 
 // CP state cikarma ve PWM uygulama modulu.
@@ -81,8 +82,8 @@ static void autotuneDividerTo12v(float adcH, float adcL)
   if (fabsf(next - CP_DIVIDER_RATIO) < 0.008f) return;
   if (s_lastTuneMs != 0 && (millis() - s_lastTuneMs) < kCpTuneRetryMs) return;
 
-  Serial.printf("[CP] Divider otomatik: %.3f -> %.3f (ADC %.3fV, %.2fV -> 12.00V). TH esiklerine dokunulmadi.\n",
-                CP_DIVIDER_RATIO, next, avgAdc, shown);
+  LOGI("[CP] Divider otomatik: %.3f -> %.3f (ADC %.3fV)",
+       CP_DIVIDER_RATIO, next, avgAdc);
   CP_DIVIDER_RATIO = next;
   saveDivider(next);
   s_lastTuneMs = millis();
@@ -122,8 +123,8 @@ static void loadCpUserCal()
   if (stb >= 1 && stb <= 50) stableCount = stb;
 
   prefs.end();
-  Serial.printf("[CP] Kullanici kalibrasyonu: div=%.3f TH B/C/D/E=%.2f/%.2f/%.2f/%.2f stb=%d\n",
-                CP_DIVIDER_RATIO, TH_B_MIN, TH_C_MIN, TH_D_MIN, TH_E_MIN, stableCount);
+  LOGI("[CP] div=%.3f TH B/C/D/E=%.2f/%.2f/%.2f/%.2f stb=%d",
+       CP_DIVIDER_RATIO, TH_B_MIN, TH_C_MIN, TH_D_MIN, TH_E_MIN, stableCount);
 }
 
 void pilot_set_divider(float ratio)

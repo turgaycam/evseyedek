@@ -10,6 +10,7 @@
 #include <mbedtls/sha256.h>
 
 #include "net/web_ui.h"
+#include "app_log.h"
 #include "io/relay.h"
 
 namespace {
@@ -252,6 +253,7 @@ static void noteFailure(const char* reason) {
     msg += ")";
   }
   ctx.lastError = msg;
+  LOGW("[OTA] %s", msg.c_str());
 }
 
 static void clearBackoff() {
@@ -582,7 +584,7 @@ static void handleUpdateCheck() {
   if (!fetchManifest(m)) return;
 
   int cmp = compareVersionTokens(m.version, CURRENT_VERSION);
-  Serial.printf("[OTA] Surumler: remote=%s local=%s cmp=%d\n", m.version.c_str(), CURRENT_VERSION, cmp);
+  LOGI("[OTA] remote=%s local=%s cmp=%d", m.version.c_str(), CURRENT_VERSION, cmp);
   if (cmp > 0) {
     ctx.lastStatus = "update_available";
     Serial.printf("[OTA] Yeni surum bulunuyor -> %s\n", m.url.c_str());
