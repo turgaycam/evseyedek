@@ -1,8 +1,9 @@
 #pragma once
 
-// sarj.rotosis.com icin guvenilen kok sertifikalar (Let's Encrypt / ISRG).
+// Istege bagli HTTPS bulut icin Let's Encrypt / ISRG kok sertifikalari.
+// Kart varsayilan olarak hicbir sunucuya baglanmaz; bu kokler yalnizca
+// yonetim panelinden bir https adresi kaydedilirse o zinciri dogrulamak icindir.
 // Kaynak: https://letsencrypt.org/certificates/ (2026-10-06 indirildi).
-// Sunucunun 2026-10-06 tarihli zinciri: sarj.rotosis.com <- YR1 <- Root YR (ISRG Root X1 capraz imzali).
 // openssl verify ile dogrulandi: yalniz ISRG Root X1 -> OK, yalniz Root YR -> OK, yalniz X2 -> hata (beklenen).
 // - ISRG Root X1  (RSA 4096, 2035)  SHA-256 96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:FC:EE:05:C0:BD:DF:08:C6
 // - ISRG Root YR  (RSA, 2045)       SHA-256 E5:7B:7E:6F:15:0C:41:91:02:E8:D5:C0:55:72:9F:F9:67:B9:D1:A8:29:BF:00:CE:C8:9C:A6:04:EB:F4:A8:6F

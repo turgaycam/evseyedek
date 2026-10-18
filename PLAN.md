@@ -55,8 +55,8 @@ Rotosis'te Telegram yoktur. Wi-Fi parolaları `secrets.ini` ile derlemeye girer 
 
 Hepsi varsayılan kapalı veya anahtarsız pasiftir. Anahtar ve "uygulamadan başlat" kapalıyken şarj kararı bugünkü gibi kalır.
 
-1. **Mobil uygulama / bulut** (`cloud_core` + `cloud_client`). İstasyon, yaklaşık 2,5 sn'de bir `https://sarj.rotosis.com/api/device/poll` yapar. Kod, adres ve 43 karakterlik gizli anahtar NVS'dedir, derlemeye gömülmez, hiçbir JSON yanıtında geri dönmez. Komutlar: `start`, `stop`. `set_limit` ayrıştırılır ama Rotosis'te de uygulanmaz (ack başarısız). `requireCloudStart` açıksa şarjın başlaması için bulut `start` gerekir; başladıktan sonra bağlantı kopsa da şarj kesilmez. İzin RAM'dedir, reset'te düşer.
-2. **QR akışı.** Cihaz QR kod üretmez. Kullanıcı sayfasında (`/`) RTevCharge yönlendirmesi ve dekoratif bir QR çizimi vardır. Asıl QR istasyonun üzerindeki fiziksel koddur; uygulama onu okuyup buluta gider, bulut `start`/`stop` yollar. "Uygulamayı aç" düğmesi Rotosis'te de `data-todo="uygulama-baglantisi"` olarak boştur.
+1. **İsteğe bağlı bulut** (`cloud_core` + `cloud_client`). Varsayılan kapalı, adres boş. Derlemede hiçbir sunucu adresi yoktur; kart dışarıya bağlanmaz. Kullanıcı panelden bir `https` adresi, istasyon kodu ve 43 karakterlik anahtar kaydedip açarsa, yaklaşık 2,5 sn'de bir `{adres}/api/device/poll` yapılır. Anahtar NVS'dedir, hiçbir JSON yanıtında geri dönmez. Komutlar: `start`, `stop`. `set_limit` ayrıştırılır ama uygulanmaz (protokolde amper alanı yok). `requireCloudStart` açıksa şarjın başlaması için bulut `start` gerekir; başladıktan sonra bağlantı kopsa da şarj kesilmez. İzin RAM'dedir, reset'te düşer.
+2. **Kartüstü uygulama ve QR.** Kullanıcı sayfası (`/`) kartın kendi PWA'sıdır. mDNS adı tam olarak `evse` olduğu için adres `http://evse.local/` olur. `/qr.svg` bu adresi gerçek bir kare kod olarak üretir. "Uygulamayı aç" aynı adrese gider. IP ikinci bir bağlantı olarak gösterilir. Android'de "Ana ekrana ekle", iPhone'da Paylaş → Ana Ekrana Ekle. Rotosis bulutuna giden bir uygulama adresi yoktur.
 3. **Herkese açık durum** `GET /status_public`. Kullanıcı ekranı bunu okur. Kalibrasyon, IP, MAC, OTA yoktur.
 4. **Planlı şarj** (`schedule_core`). En çok 3 yasaklı saat aralığı, gece yarısını aşan aralık, gün bitmaskesi, UTC+3. Varsayılan kapalı (örnek aralık 17:00–22:00). Saat NTP'den gelmezse kısıtlama uygulanmaz.
 5. **Yönetim oturumu** (`auth_core`). Basic Auth yerine `POST /api/login` → Bearer jeton (15 dk, en çok 4 oturum). Parola NVS'de tuzlu SHA-256. 5 hatada kilit. `POST /api/password`. OTA için 60 sn'lik tek kullanımlık bilet. İlk parola bugünkü `EVSE_ADMIN_PASSWORD` değeridir (10 karakter, minimumu karşılar).
@@ -81,15 +81,19 @@ Hepsi varsayılan kapalı veya anahtarsız pasiftir. Anahtar ve "uygulamadan ba�
 - `set_limit` komutunun akıma uygulanması (protokol alanı yanıtta yok; Rotosis de reddediyor).
 - Kullanıcı CSS editörü.
 
-## Açık sorular
+## Karar verilen varsayımlar
 
-1. Uygulama STOP veya planlı şarj, CP hâlâ C/D iken kontaktörü de hemen ve kalıcı açsın mı? Şu anki kart kuralı kontaktörü C/D boyunca kapalı tutar; durdurma PWM ile araca bırakılır. Kalıcı açma daha sert bir kesinti olur.
-2. "Uygulamayı aç" düğmesinin gerçek URL'si nedir? Rotosis'te de boş.
-3. Bulut sunucusu her zaman `https://sarj.rotosis.com` mı, yoksa istasyon bazında panelden mi girilecek? Kod panelden değişebilir; varsayılan o adres.
-4. Eski özel CSS editörü geri gelsin mi? Kayıt silinmiyor, ekranda yok.
-5. `set_limit` (amper) buluttan uygulanmalı mı? Yanıt biçiminde limit değeri tanımlı değil.
-6. Yönetim parolası ilk açılışta mevcut `rotosis123` ile mi kalsın? Evet, öyle bağlandı; panel değiştirmeyi isteyecek.
+1. Kontaktör C/D kuralında kalır. Uygulama, plan veya STOP yalnızca PWM'i kapatır. CP hâlâ C veya D iken kontaktörü zorla açmak bu kartın kuralını bozacağı için yapılmaz.
+2. Uygulama adresi `http://evse.local/` dir. QR bunu kodlar. Sayfa IP'yi de gösterir. mDNS adı tam `evse` olduğu için aynı Wi-Fi'de ikinci kart `evse.local` ile çakışır; o kart IP ile açılır.
+3. Bulut varsayılan kapalıdır, adres boştur, derlemede gömülü sunucu yoktur. İleride kullanıcı panelden kendi `https` adresini ve anahtarını yazarsa istemci o zaman çalışır.
+4. Özel CSS düzenleyici geri gelmez. Eski `user_css` kaydı silinmez.
+5. `set_limit` uygulanmaz. Akım limiti yönetim panelinden 6–32 A olarak kalır.
+6. İlk yönetim kullanıcısı `admin`, ilk parola derlemedeki `EVSE_ADMIN_PASSWORD` değeridir. Panel değiştirmeyi ister.
+7. Son seanslar kartın içinde durur. Kullanıcı sayfası son 5 seansı gösterir. Bulut hesabı yoktur.
+8. "Şarjı yalnızca uygulamadan başlat" kutusu, adres ve anahtar kaydedilmeden hiçbir şeyi değiştirmez. Normal yol: araç takılınca otomatik şarj, yerel START/STOP.
+9. Otomatik güncelleme `main` dalındaki `version.json` dosyasını okur. O dosyanın `url` alanı firmware'dir; etiketli GitHub Release bu dosyayı ve `firmware.bin` dosyasını yayınlar. Eşit sürüm kendiliğinden kurulmaz. Elle `.bin` yükleme (`/update`) internet istemez.
+10. Pin ve röle kaynağı yalnızca `include/app_pins.h` olmaya devam eder.
 
 ## Uygulama durumu
 
-Bu plandaki birleştirme uygulandı. Pin haritası ve C/D kontaktör kuralı duruyor. Telegram duruyor. Bulut, QR kullanıcı sayfası, planlı şarj, Bearer oturum ve seans bekletme eklendi. Ayrıntı PR açıklamasında.
+Birleştirme ve bağımsızlık kararı uygulandı. Pin haritası ve C/D kontaktör kuralı duruyor. Telegram duruyor. QR, kullanıcı ekranı, planlı şarj, oturum, `/status_public` ve Telegram kartın içinde, yerel ağda çalışır. Bulut yoklaması varsayılan kapalıdır. Kullanıcı kılavuzu kök `README.md` dosyasındadır.

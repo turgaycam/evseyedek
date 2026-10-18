@@ -23,14 +23,14 @@ extern uint32_t g_manualStopAutoResumeAtMs;
 namespace {
 
 constexpr const char* kPrefsNs = "evsecloud";
-constexpr const char* kDefaultUrl = "https://sarj.rotosis.com";
 constexpr uint32_t kOnlineWindowMs = 15000;   // sunucunun "cevrimici" esigiyle ayni
 
 // NVS'deki ayar (anahtar dahil). Yalnizca bu dosyada; disari asla kopyalanmaz.
+// on varsayilan kapali, url varsayilan bos: kart hicbir buluta baglanmaz.
 struct Config {
-  bool on = true;
+  bool on = false;
   char code[17] = "";            // bos = varsayilan (MAC son 6 hane)
-  char url[kUrlMax] = "";        // bos = varsayilan
+  char url[kUrlMax] = "";        // bos = bulut yok
   char secret[kSecretLen + 1] = "";
 };
 
@@ -85,9 +85,9 @@ void ensureMacCode() {
 
 // Kilit altinda cagrilir.
 const char* effCode(const Config& c) { return c.code[0] ? c.code : s_macCode; }
-const char* effUrl(const Config& c) { return c.url[0] ? c.url : kDefaultUrl; }
+const char* effUrl(const Config& c) { return c.url; }
 bool isActive(const Config& c) {
-  return c.on && valid_secret(c.secret) && valid_station_code(effCode(c));
+  return c.on && c.url[0] != '\0' && valid_secret(c.secret) && valid_station_code(effCode(c));
 }
 
 bool activeNow() {
@@ -369,7 +369,7 @@ void cloud_init() {
   bool req = false;
   Preferences p;
   if (p.begin(kPrefsNs, true)) {
-    c.on = p.getBool("on", true);
+    c.on = p.getBool("on", false);
     p.getString("code", c.code, sizeof(c.code));
     p.getString("url", c.url, sizeof(c.url));
     p.getString("secret", c.secret, sizeof(c.secret));
@@ -435,7 +435,7 @@ bool cloud_apply_config(const CloudCfgChange& ch, const char** err) {
       *err = "Sunucu adresi https:// ile baslamali ve gecerli olmali";
       return false;
     } else {
-      snprintf(next.url, sizeof(next.url), "%s", strcmp(norm, kDefaultUrl) == 0 ? "" : norm);
+      snprintf(next.url, sizeof(next.url), "%s", norm);
     }
   }
   if (ch.clearSecret) {
@@ -453,7 +453,7 @@ bool cloud_apply_config(const CloudCfgChange& ch, const char** err) {
   bool nextReq = (ch.requireStart >= 0) ? (ch.requireStart != 0) : s_requireStart;
   if (nextReq && !isActive(next)) {
     memset(next.secret, 0, sizeof(next.secret));
-    *err = "Uygulamadan baslatma icin once bulut etkin olmali (kod + anahtar + acik)";
+    *err = "Uygulamadan baslatma icin bulut acik, adres, kod ve anahtar gerekli";
     return false;
   }
 

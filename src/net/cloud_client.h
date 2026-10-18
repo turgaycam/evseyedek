@@ -1,9 +1,9 @@
 #pragma once
 
-// Sarj sunucusu (varsayilan https://sarj.rotosis.com) bulut istemcisi - cihaz tarafi.
+// Istege bagli bulut istemcisi. Varsayilan KAPALI; gomulu sunucu adresi yoktur.
 // - Istasyon kodu, sunucu adresi ve gizli anahtar DERLEMEYE GOMULMEZ; NVS'de ("evsecloud") tutulur ve
 //   yonetim panelinden (POST /api/cloud_cfg, Bearer) girilir. Anahtar hicbir yanitta/gunlukte geri donmez.
-// - Anahtar yoksa ya da bulut kapaliysa istemci pasiftir; cihaz eskisi gibi calisir.
+// - Adres bos, anahtar yok ya da bulut kapaliysa istemci hicbir sunucuya baglanmaz.
 // - Ayri FreeRTOS gorevi (cekirdek 0) her ~2,5 sn HTTPS ile /api/device/poll yapar; ana donguyu bloklamaz.
 // - Komutlar (start/stop) ana dongude cloud_loop() icinde uygulanir; role/PWM'e gorevden dokunulmaz.
 // Mantik cekirdegi: cloud_core.h (host'ta birim testli).

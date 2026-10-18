@@ -23,6 +23,7 @@
 
 #include "io/current_sensor.h"
 #include "auth.h"
+#include "qrcode.h"
 #include "cloud_client.h"
 #include "schedule.h"
 
@@ -490,12 +491,8 @@ static void refreshDeviceIdentity() {
   if (s_stationLabelCustom && s_stationCustomLabel[0]) {
     snprintf(s_stationLabel, sizeof(s_stationLabel), "%s", s_stationCustomLabel);
   }
-  snprintf(
-    s_hostName, sizeof(s_hostName),
-    "%s-%s",
-    kHostNameBase,
-    s_stationCode
-  );
+  // Tek kart: http://evse.local . Ikinci kart ayni adi paylasamaz; o zaman IP kullanilir.
+  snprintf(s_hostName, sizeof(s_hostName), "%s", kHostNameBase);
 }
 
 static const char* currentHostName() {
@@ -747,6 +744,7 @@ static const char USER_HTML[] PROGMEM = R"HTML(
 <title>RTevCharge</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/app-icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/app-icon.svg">
 <style>
 :root{--lacivert:#0c425e;--turuncu:#ff5a1f;--mavi:#00b2ff;--zemin:#f3f6f8;--yuzey:#fff;--kenar:#d5dee5;--metin:#14212b;--soluk:#4d5f6d;--iyi:#11703f;--iyi-z:#e2f5ea;--kotu:#b3261e;--kotu-z:#fbe6e4;--uyari:#8a5a00;--uyari-z:#fff3d6;--bilgi:#00618c;--bilgi-z:#e0f3fc;--dugme:#0c425e;--dugme-metin:#fff;--odak:#ff5a1f;--kod:#f0f3f6;--arac:#1f5f80;--st:env(safe-area-inset-top);--sb:env(safe-area-inset-bottom);--sl:env(safe-area-inset-left);--sr:env(safe-area-inset-right)}
 @media(prefers-color-scheme:dark){:root{--zemin:#0b1a24;--yuzey:#11283a;--kenar:#24435a;--metin:#e7eef3;--soluk:#a9bccb;--iyi:#5fd896;--iyi-z:#123526;--kotu:#ff8a80;--kotu-z:#3a1a1a;--uyari:#ffc760;--uyari-z:#3a2c0e;--bilgi:#6fd3ff;--bilgi-z:#0c3047;--dugme:#00b2ff;--dugme-metin:#06141d;--kod:#0a1720;--arac:#4a8db3}}
@@ -867,8 +865,8 @@ main{max-width:560px;margin:0 auto;padding:16px calc(16px + var(--sr)) calc(24px
 .lim{margin:14px 0 0;font-size:.88rem;color:var(--soluk)}
 /* QR yonlendirme */
 .qr{display:flex;gap:16px;align-items:center;border-top:4px solid var(--turuncu)}
-.qr svg.q{width:96px;height:96px;flex:none;color:var(--lacivert)}
-@media(prefers-color-scheme:dark){.qr svg.q{color:var(--mavi)}}
+.qr img.q{width:96px;height:96px;flex:none;background:#fff;border-radius:8px}
+@media(prefers-color-scheme:dark){.qr img.q{background:#fff}}
 .qr p{margin:0 0 12px;font-weight:600}
 .qr .dugme{width:100%}
 @media(max-width:360px){.qr{flex-direction:column;text-align:center}}
@@ -932,9 +930,12 @@ footer a{display:inline-flex;align-items:center;min-height:44px;padding:0 12px;c
   </section>
 
   <section class="kart qr" id="qrCard">
-    <svg class="q" viewBox="0 0 96 96" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"><path d="M6 26V6h20M70 6h20v20M90 70v20H70M26 90H6V70"/></g><g fill="currentColor" opacity=".8"><rect x="24" y="24" width="18" height="18" rx="2"/><rect x="54" y="24" width="18" height="18" rx="2"/><rect x="24" y="54" width="18" height="18" rx="2"/><rect x="56" y="56" width="6" height="6"/><rect x="66" y="56" width="6" height="6"/><rect x="56" y="66" width="6" height="6"/><rect x="66" y="66" width="6" height="6"/></g></svg>
-    <div><p id="qrText">Şarjı başlatmak için RTevCharge uygulamasından istasyondaki QR kodu okutun.</p>
-    <a class="dugme" id="appBtn" href="#" data-todo="uygulama-baglantisi">Uygulamayı aç</a></div>
+    <img class="q" id="qrImg" alt="http://evse.local adresinin kare kodu" width="96" height="96" src="/qr.svg">
+    <div><p id="qrText">Bu sayfa kartın kendi uygulamasıdır. Telefonunuzda açmak için aşağıdaki adresi kullanın veya kare kodu okutun.</p>
+    <p class="dA" id="appAddr">http://evse.local/</p>
+    <p class="dA"><a id="ipLink" href="http://evse.local/">http://evse.local/</a></p>
+    <a class="dugme" id="appBtn" href="http://evse.local/">Uygulamayı aç</a>
+    <p class="not" id="installHint">Ana ekrana eklemek için: Android’de alttaki düğme, iPhone’da Paylaş menüsü → Ana Ekrana Ekle.</p></div>
   </section>
 
   <section class="kart">
@@ -948,7 +949,7 @@ footer a{display:inline-flex;align-items:center;min-height:44px;padding:0 12px;c
 
   <section class="kart">
     <h2>Son seanslar</h2>
-    <p class="bos"><svg class="i" aria-hidden="true"><use href="#iK"/></svg>Geçmiş seanslarınız, uygulamada giriş yaptığınızda burada görünecek.</p>
+    <div id="histList"><p class="bos">Henüz kayıtlı seans yok. Seanslar bu kartın içinde durur.</p></div>
   </section>
 
   <footer>
@@ -962,7 +963,7 @@ footer a{display:inline-flex;align-items:center;min-height:44px;padding:0 12px;c
 const POLL_MS=3000;
 const ST={
   A:{t:"Araç bağlı değil",h:"Şarj kablosunu aracınıza takın.",i:"sA"},
-  B:{t:"Araç bağlı, hazır",h:"Şarjı başlatmak için uygulamadan QR kodu okutun.",i:"sB"},
+  B:{t:"Araç bağlı, hazır",h:"Şarj birazdan başlar. Bu sayfadan izleyebilirsiniz.",i:"sB"},
   C:{t:"Şarj oluyor",h:"Enerji aracınıza aktarılıyor.",i:"sC"},
   D:{t:"Şarj oluyor",h:"Havalandırmalı şarj modu.",i:"sC"},
   E:{t:"Bağlantı hatası",h:"Araçla iletişim kurulamadı. Kabloyu çıkarıp yeniden takın.",i:"sE"},
@@ -1015,8 +1016,20 @@ function render(d){
     });
     setText("limitA",nf(lim,0));
   }
-  // QR metni duruma gore
-  setText("qrText",charging?"Şarjı durdurmak veya takip etmek için RTevCharge uygulamasını kullanın.":"Şarjı başlatmak için RTevCharge uygulamasından istasyondaki QR kodu okutun.");
+  const appUrl=d.appUrl||"http://evse.local/";
+  $("appBtn").href=appUrl;
+  setText("appAddr",appUrl);
+  const ip=d.ip?("http://"+d.ip+"/"):"";
+  const ipA=$("ipLink");
+  if(ip){ipA.hidden=false;ipA.href=ip;ipA.textContent="IP ile aç: "+ip;}
+  else{ipA.hidden=true;}
+  setText("qrText",charging?"Şarj sürüyor. Bu sayfadan izleyin; durdurmak için yönetici ekranını kullanın.":"Telefon aynı Wi-Fi’deyken bu adresi açın veya kare kodu okutun. Uygulama kartın içinde çalışır.");
+  const hist=Array.isArray(d.hist)?d.hist:[];
+  const box=$("histList");
+  if(box){
+    if(!hist.length){box.innerHTML='<p class="bos">Henüz kayıtlı seans yok. Seanslar bu kartın içinde durur.</p>';}
+    else{box.innerHTML="<dl>"+hist.map(h=>"<dt>"+fmtDur(h.d)+"</dt><dd>"+nf(h.e,2)+" kWh</dd>").join("")+"</dl>";}
+  }
   // seans ozeti
   const has=live||(Number(sec)||0)>0;
   setText("sessTitle",live?"Bu seans":"Son seans");
@@ -1057,8 +1070,6 @@ $("installBtn").addEventListener("click",()=>{
   deferredPrompt.userChoice.finally(()=>{deferredPrompt=null;$("installBtn").hidden=true;});
 });
 if("serviceWorker" in navigator){window.addEventListener("load",()=>navigator.serviceWorker.register("/sw.js").catch(()=>{}));}
-// Uygulama baglantisi henuz yok (TODO: universal link / app link)
-$("appBtn").addEventListener("click",e=>{if($("appBtn").getAttribute("href")==="#")e.preventDefault();});
 pull();
 </script>
 </body></html>
@@ -1414,17 +1425,17 @@ tr:last-child td{border-bottom:0}
     <dl class="bilgi"><dt>Kullanıcı</dt><dd>admin</dd><dt>Otomatik çıkış</dt><dd><span id="idleLeft">15:00</span> sonra</dd></dl>
     <div class="satir" style="margin-top:12px"><button class="ik" onclick="location.hash='test'">Servis testleri</button><button class="th" onclick="logout()">Çıkış yap</button></div></div>
   <div class="kart genis" id="cloudBox"><h2>Bulut bağlantısı <span class="s rozet" id="cloudTag">-</span></h2>
-    <div class="mesaj uyari" id="cloudWarn" style="margin:0 0 12px" hidden>Bulut ayarı yapılmadı: istasyon kodunu kontrol edip sunucudan alınan gizli anahtarı girin.</div>
+    <div class="mesaj uyari" id="cloudWarn" style="margin:0 0 12px" hidden>Bulut açık ama adres veya gizli anahtar eksik. Eksikken kart hiçbir sunucuya bağlanmaz.</div>
     <dl class="bilgi"><dt>Durum</dt><dd id="cloudPhase">-</dd><dt>Son yoklama</dt><dd id="cloudAge">-</dd><dt>Son HTTP</dt><dd id="cloudHttp">-</dd><dt>Son komut</dt><dd id="cloudCmd">-</dd><dt>Gizli anahtar</dt><dd id="cloudSecretState">-</dd></dl>
     <label class="ck"><input type="checkbox" id="cloudOn">Bulut bağlantısı açık</label>
     <div class="f">
       <div><label for="cloudCode">İstasyon kodu</label><input id="cloudCode" autocapitalize="characters" spellcheck="false" maxlength="16" placeholder="Boşsa MAC'ten"></div>
-      <div><label for="cloudUrl">Sunucu adresi</label><input id="cloudUrl" autocapitalize="off" spellcheck="false" maxlength="95" placeholder="https://sarj.rotosis.com"></div>
+      <div><label for="cloudUrl">Sunucu adresi</label><input id="cloudUrl" autocapitalize="off" spellcheck="false" maxlength="95" placeholder="Boş bırakın: bulut kapalı"></div>
       <div><label for="cloudSecret">Gizli anahtar</label><input id="cloudSecret" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="43" placeholder="Değişmeyecekse boş"></div>
     </div>
     <div class="satir"><button onclick="saveCloud()">Kaydet</button><button class="th" onclick="clearCloudSecret()">Anahtarı sil</button></div>
     <label class="ck" style="margin-top:8px"><input type="checkbox" id="cloudReq" onclick="return toggleCloudReq(event)">Şarjı yalnızca uygulamadan başlat</label>
-    <p class="not">Açıkken araç takılsa da şarj, uygulamadan "Başlat" gelmeden başlamaz. Başladıktan sonra bağlantı kopsa da şarj sürer; uygulamadan durdurma, aracı ayırma ya da paneldeki Durdur ile biter.</p></div>
+    <p class="not">Bulut isteğe bağlıdır ve varsayılan kapalıdır. Adres boşken kart dışarıdaki hiçbir şarj sunucusuna bağlanmaz. Şarj, saat planı ve bu ekran kartın kendi belleğinde çalışır. “Yalnızca uygulamadan başlat” ancak siz bir adres ve anahtar kaydederseniz anlam kazanır.</p></div>
   <div class="kart genis" id="schedBox"><h2>Planlı şarj (puant) <span class="s rozet" id="schedTag">-</span></h2>
     <p class="not" id="schedNow">-</p>
     <label class="ck"><input type="checkbox" id="schedOn">Yasaklı saatlerde şarj etme</label>
@@ -1471,7 +1482,7 @@ tr:last-child td{border-bottom:0}
   <div class="kart"><h2>Yazılım güncelleme <span class="s rozet" id="otaTag">-</span></h2>
     <div class="ver"><div><small>KURULU</small><b id="otaCurVer">-</b></div><div class="ok">&rarr;</div><div id="otaRemoteBox"><small>SUNUCUDA</small><b id="otaRemoteVer">-</b></div></div>
     <div class="satir"><button class="ik" onclick="runOtaCheckAdmin()">Kontrol et</button><button id="otaInstallBtn" onclick="runOtaInstall()" disabled>Güncellemeyi yükle</button><button class="ik" onclick="openUpdate()">.bin yükle</button></div>
-    <p class="not" style="margin:10px 0 0">Kontrol yalnızca yeni sürümü bulur; yükleme ayrıca onay ister, şarj durur ve cihaz yeniden başlar.</p></div>
+    <p class="not" style="margin:10px 0 0">İki yol vardır. 1) Bu kart, internet varken GitHub’daki sürüm listesine bakar (main dalındaki version.json; içindeki dosya adresi). Kontrol yeni sürümü bulur, yükleme ayrıca onay ister. 2) İnternet olmadan “.bin yükle” ile firmware dosyasını telefondan veya bilgisayardan karta yüklersiniz. Yükleme şarjı durdurur ve kartı yeniden başlatır.</p></div>
   <div class="kart"><h2>Teşhis</h2>
     <dl class="bilgi"><dt>Çalışan bölüm</dt><dd id="otaPart">-</dd><dt>Image state</dt><dd id="otaImgState">-</dd><dt>Durum</dt><dd id="otaStatus">-</dd><dt>Son kontrol</dt><dd id="otaAge">-</dd><dt>Hata</dt><dd id="otaError">Hata yok</dd></dl></div>
   <div class="kart genis tehlike"><h2>Tehlikeli bölge</h2>
@@ -1865,6 +1876,48 @@ static void handleLogs() {
   server.send(200, "text/plain; charset=utf-8", buf[0] ? buf : "(log bos)\n");
 }
 static void handleManifest() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "application/manifest+json", MANIFEST_JSON); }
+static void handleQrSvg() {
+  noteWebActivity();
+  refreshDeviceIdentity();
+  char url[48];
+  snprintf(url, sizeof(url), "http://%s.local/", currentHostName());
+
+  uint8_t modules[128];  // surum 3: (29*29+7)/8 = 106 bayt
+  QRCode qr;
+  if (qrcode_initText(&qr, modules, 3, ECC_MEDIUM, url) != 0) {
+    server.send(500, "text/plain", "QR olusturulamadi");
+    return;
+  }
+
+  const int quiet = 2;
+  const int dim = qr.size + quiet * 2;
+  String svg;
+  svg.reserve(4096);
+  svg += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
+  svg += "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 ";
+  svg += String(dim);
+  svg += " ";
+  svg += String(dim);
+  svg += "\" shape-rendering=\"crispEdges\" role=\"img\">";
+  svg += "<title>";
+  svg += url;
+  svg += "</title>";
+  svg += "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>";
+  for (uint8_t y = 0; y < qr.size; y++) {
+    for (uint8_t x = 0; x < qr.size; x++) {
+      if (!qrcode_getModule(&qr, x, y)) continue;
+      svg += "<rect x=\"";
+      svg += String(x + quiet);
+      svg += "\" y=\"";
+      svg += String(y + quiet);
+      svg += "\" width=\"1\" height=\"1\" fill=\"#0c425e\"/>";
+    }
+  }
+  svg += "</svg>";
+  server.sendHeader("Cache-Control", "no-store");
+  noteHttpResponseSent();
+  server.send(200, "image/svg+xml", svg);
+}
 static void handleServiceWorker() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "application/javascript", SERVICE_WORKER_JS); }
 static void handleAppIcon() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "image/svg+xml", APP_ICON_SVG); }
 static void handleVehicleTopArt() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "image/svg+xml", VEHICLE_TOP_ART_SVG); }
@@ -2206,8 +2259,9 @@ static const char* computeAlarm(const PilotMeasurements& m, float iMax, bool sta
   return "Sistem normal";
 }
 
-// Kullanici ekrani ("/") icin herkese acik, salt-okunur, asgari alanli durum.
-// Kalibrasyon, Wi-Fi profili, IP/MAC/host, OTA ve sifirlama bilgisi icermez.
+// Kullanici ekrani ("/") icin herkese acik, salt-okunur durum.
+// Kalibrasyon, Wi-Fi parolasi, MAC, OTA ve sifirlama bilgisi icermez.
+// appUrl (http://evse.local/) ve istasyon IP'si, uygulamayi acmak icin vardir.
 static void handleStatusPublic() {
   noteWebActivity();
   auto m = pilot_get();
@@ -2242,6 +2296,26 @@ static void handleStatusPublic() {
   char schedUntil[6] = "";
   if (schedEval.blocked && schedEval.untilMin >= 0) evse_sched::format_hhmm((uint16_t)schedEval.untilMin, schedUntil);
 
+  char appUrl[48];
+  snprintf(appUrl, sizeof(appUrl), "http://%s.local/", currentHostName());
+  String ipStr = staOk ? WiFi.localIP().toString() : String();
+
+  char histJson[640];
+  int hn = snprintf(histJson, sizeof(histJson), "[");
+  int shown = g_histCount < 5 ? g_histCount : 5;
+  for (int i = 0; i < shown && hn > 0 && hn < (int)sizeof(histJson) - 48; i++) {
+    int idx = (g_histHead - 1 - i + 40) % 20;
+    hn += snprintf(
+      histJson + hn, sizeof(histJson) - hn,
+      "%s{\"d\":%lu,\"e\":%.3f}",
+      (i == 0) ? "" : ",",
+      (unsigned long)g_histDurationSec[idx],
+      safeFinite(g_histEnergyKWh[idx])
+    );
+  }
+  if (hn > 0 && hn < (int)sizeof(histJson) - 2) snprintf(histJson + hn, sizeof(histJson) - hn, "]");
+  else snprintf(histJson, sizeof(histJson), "[]");
+
   char* buf = s_jsonBuf;  // web gorevi tek is parcacigi; ortak tampon guvenli
   snprintf(
     buf, sizeof(s_jsonBuf),
@@ -2251,7 +2325,8 @@ static void handleStatusPublic() {
     "\"stationName\":\"%s\",\"stationAddr\":\"%s\","
     "\"alarmLv\":%d,\"alarmTxt\":\"%s\","
     "\"sLive\":%d,\"sLiveSec\":%lu,\"sLiveKWh\":%.3f,"
-    "\"schedBlocked\":%d,\"schedUntil\":\"%s\"}",
+    "\"schedBlocked\":%d,\"schedUntil\":\"%s\","
+    "\"appUrl\":\"%s\",\"ip\":\"%s\",\"hist\":%s}",
     m.stateStable.c_str(),
     ia, ib, ic,
     pW, safeFinite(g_energyKWh),
@@ -2269,7 +2344,10 @@ static void handleStatusPublic() {
     (unsigned long)g_sessionLiveSeconds,
     safeFinite(g_sessionLiveEnergyKWh),
     schedEval.blocked ? 1 : 0,
-    schedUntil
+    schedUntil,
+    appUrl,
+    ipStr.c_str(),
+    histJson
   );
   server.sendHeader("Cache-Control", "no-store");
   server.send(200, "application/json", buf);
@@ -3001,6 +3079,7 @@ void web_init() {
   server.on("/ping", HTTP_GET, handlePing);
   server.on("/logs", HTTP_GET, handleLogs);
   server.on("/manifest.json", HTTP_GET, handleManifest);
+  server.on("/qr.svg", HTTP_GET, handleQrSvg);
   server.on("/sw.js", HTTP_GET, handleServiceWorker);
   server.on("/app-icon.svg", HTTP_GET, handleAppIcon);
   server.on("/vehicle-top-art.svg", HTTP_GET, handleVehicleTopArt);

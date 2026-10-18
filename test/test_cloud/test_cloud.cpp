@@ -48,15 +48,15 @@ static void test_config_validation() {
   TEST_ASSERT_FALSE(valid_station_code("IST\"01"));
 
   char out[kUrlMax];
-  TEST_ASSERT_TRUE(normalize_server_url("https://sarj.rotosis.com", out));
-  TEST_ASSERT_EQUAL_STRING("https://sarj.rotosis.com", out);
-  TEST_ASSERT_TRUE(normalize_server_url("https://sarj.rotosis.com//", out));
-  TEST_ASSERT_EQUAL_STRING("https://sarj.rotosis.com", out);
+  TEST_ASSERT_TRUE(normalize_server_url("https://ornek.example.com", out));
+  TEST_ASSERT_EQUAL_STRING("https://ornek.example.com", out);
+  TEST_ASSERT_TRUE(normalize_server_url("https://ornek.example.com//", out));
+  TEST_ASSERT_EQUAL_STRING("https://ornek.example.com", out);
   TEST_ASSERT_TRUE(normalize_server_url("https://example.com:8443/api.ashx", out));
   TEST_ASSERT_EQUAL_STRING("https://example.com:8443/api.ashx", out);
-  TEST_ASSERT_FALSE(normalize_server_url("http://sarj.rotosis.com", out));
+  TEST_ASSERT_FALSE(normalize_server_url("http://ornek.example.com", out));
   TEST_ASSERT_FALSE(normalize_server_url("https://", out));
-  TEST_ASSERT_FALSE(normalize_server_url("https://sarj rotosis.com", out));
+  TEST_ASSERT_FALSE(normalize_server_url("https://ornek example.com", out));
   TEST_ASSERT_FALSE(normalize_server_url("https://a.com:99999", out));
   TEST_ASSERT_FALSE(normalize_server_url("https://a.com/\"x", out));
   TEST_ASSERT_FALSE(normalize_server_url("https://a.com?x=1", out));

@@ -61,8 +61,11 @@ static void initBoardIdentity()
        g_boardId.c_str(), g_boardMac.c_str(), g_boardName.c_str());
 }
 
+// Otomatik guncelleme: main dalindaki version.json. Icindeki "url" alani
+// firmware dosyasidir (GitHub Release yayinlaninca oraya doner).
+// Elle yukleme internet istemez: yonetim paneli /update.
 static constexpr char kOtaManifestUrl[] =
-  "https://raw.githubusercontent.com/turgaycam/evseyedek/backup-new-board-ota/version.json";
+  "https://raw.githubusercontent.com/turgaycam/evseyedek/main/version.json";
 static constexpr char kGitHubFingerprint[] = "";
 static constexpr uint32_t kOtaAutoCheckIntervalMs = 10UL * 60UL * 1000UL;
 static constexpr uint8_t kMaxConsecutiveWdtResets = 3;

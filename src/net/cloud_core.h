@@ -1,6 +1,7 @@
 #pragma once
 
-// Sarj sunucusu (sarj.rotosis.com) bulut istemcisinin donanimdan bagimsiz cekirdegi.
+// Istege bagli bulut istemcisinin donanimdan bagimsiz cekirdegi.
+// Varsayilan adres yoktur; adres bosken istemci pasiftir.
 // Arduino/ESP32 bagimliligi yoktur; host'ta (pio test -e native) birim testiyle dogrulanir.
 // Cihaz tarafindaki gorev, HTTPS ve role/PWM baglantisi cloud_client.cpp icindedir.
 //
