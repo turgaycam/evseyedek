@@ -73,5 +73,6 @@ Panelde **Kontrol et** yeni sürümü gösterir. **Güncellemeyi yükle** ayrıc
 ## Bilinmesi gerekenler
 
 - Bulut bağlantısı isteğe bağlıdır ve kapalı gelir. Adres boştur. Kart, siz panelden bir `https` adresi ve anahtar yazmadıkça hiçbir şarj sunucusuna bağlanmaz. “Şarjı yalnızca uygulamadan başlat” kutusu da o zamana kadar bir şey değiştirmez.
+- İsterseniz kendi bulutunuz `server/` klasöründedir. Kurulum `server/KURULUM.md` içindedir. Kartın paneline yazılacak adres `https://turgay.rotosis.com` olur. Sunucu olmasa da kart şarj eder.
 - Pin ve röle düzeni `include/app_pins.h` dosyasındadır. Başka bir kartın pinleri kullanılmaz.
 - Geliştirici notları `docs/` ve `PLAN.md` içindedir.

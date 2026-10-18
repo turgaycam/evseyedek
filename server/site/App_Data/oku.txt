@@ -1,0 +1,3 @@
+Bu klasör istasyon kayıtlarını ve yönetici parola özetini tutar.
+İndirilemez. Uygulama havuzunun yazma izni olmalıdır.
+Parola ve cihaz gizli anahtarı burada düz metin durmaz.

@@ -154,6 +154,19 @@ static void test_parse_response() {
   TEST_ASSERT_TRUE(r.cmdId == 41);
   TEST_ASSERT_TRUE(r.type == CmdType::Start);
 
+  // server/ paketinin yazdigi bicim: payload alani yok, 1024 baytin altinda.
+  const char* sunucuBos = "{\"ok\":true,\"t\":1791289200,\"cmd\":null}";
+  TEST_ASSERT_TRUE(parse_poll_response(sunucuBos, strlen(sunucuBos), r));
+  TEST_ASSERT_FALSE(r.hasCmd);
+  const char* sunucuStart = "{\"ok\":true,\"t\":1791289203,\"cmd\":{\"id\":41,\"type\":\"start\"}}";
+  TEST_ASSERT_TRUE(parse_poll_response(sunucuStart, strlen(sunucuStart), r));
+  TEST_ASSERT_TRUE(r.hasCmd);
+  TEST_ASSERT_TRUE(r.cmdId == 41);
+  TEST_ASSERT_TRUE(r.type == CmdType::Start);
+  const char* sunucuStop = "{\"ok\":true,\"t\":1791289204,\"cmd\":{\"id\":42,\"type\":\"stop\"}}";
+  TEST_ASSERT_TRUE(parse_poll_response(sunucuStop, strlen(sunucuStop), r));
+  TEST_ASSERT_TRUE(r.type == CmdType::Stop);
+
   const char* c = "{\"ok\":true,\"t\":1,\"cmd\":{\"id\":42,\"type\":\"stop\",\"payload\":null}}";
   TEST_ASSERT_TRUE(parse_poll_response(c, strlen(c), r));
   TEST_ASSERT_TRUE(r.type == CmdType::Stop);
