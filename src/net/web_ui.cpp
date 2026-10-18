@@ -14,13 +14,17 @@
 
 #include "app_config.h"
 #include "app_pins.h"
+#include "app_log.h"
 #include "OTA_Manager.h"
 #include "vehicle_top_art_svg.h"
+#include "togg_arac_v2_webp.h"
 #include "pilot/pilot.h"
 #include "io/relay.h"
 
 #include "io/current_sensor.h"
-#include "app_log.h"
+#include "auth.h"
+#include "cloud_client.h"
+#include "schedule.h"
 
 // Bu dosya 4 ana parcadan olusur:
 // 1) Wi-Fi / OTA yardimcilari
@@ -84,7 +88,7 @@ static void pulseGpio(uint8_t pin) {
 #endif
 
 #ifndef EVSE_ADMIN_PASSWORD
-#define EVSE_ADMIN_PASSWORD "rotosis123"
+#error "EVSE_ADMIN_PASSWORD secrets.ini icinde tanimlanmali (bkz. secrets.example.ini)"
 #endif
 
 #ifndef EVSE_HOSTNAME
@@ -103,61 +107,60 @@ static void pulseGpio(uint8_t pin) {
 #define EVSE_WIFI_1_LOC "Ev"
 #endif
 #ifndef EVSE_WIFI_1_SSID
-#define EVSE_WIFI_1_SSID "FiberHGW_ZTN2TY"
+#define EVSE_WIFI_1_SSID ""
 #endif
 #ifndef EVSE_WIFI_1_PASS
-#define EVSE_WIFI_1_PASS "PzeuKE7X44Rs"
+#define EVSE_WIFI_1_PASS ""
 #endif
 
 #ifndef EVSE_WIFI_2_LOC
 #define EVSE_WIFI_2_LOC "Rotosis"
 #endif
 #ifndef EVSE_WIFI_2_SSID
-#define EVSE_WIFI_2_SSID "Rotosis_Ofis"
+#define EVSE_WIFI_2_SSID ""
 #endif
 #ifndef EVSE_WIFI_2_PASS
-#define EVSE_WIFI_2_PASS "Rotosis2020"
+#define EVSE_WIFI_2_PASS ""
 #endif
 
 #ifndef EVSE_WIFI_3_LOC
 #define EVSE_WIFI_3_LOC "Ceylan Robot"
 #endif
 #ifndef EVSE_WIFI_3_SSID
-#define EVSE_WIFI_3_SSID "CEYLAN-ROBOT"
+#define EVSE_WIFI_3_SSID ""
 #endif
 #ifndef EVSE_WIFI_3_PASS
-#define EVSE_WIFI_3_PASS "Mahfer123."
+#define EVSE_WIFI_3_PASS ""
 #endif
 
 #ifndef EVSE_WIFI_4_LOC
 #define EVSE_WIFI_4_LOC "Rotosis Atolye"
 #endif
 #ifndef EVSE_WIFI_4_SSID
-#define EVSE_WIFI_4_SSID "Rotosis_Atolye"
+#define EVSE_WIFI_4_SSID ""
 #endif
 #ifndef EVSE_WIFI_4_PASS
-#define EVSE_WIFI_4_PASS "Rotosis2021@"
+#define EVSE_WIFI_4_PASS ""
 #endif
 
 #ifndef EVSE_WIFI_5_LOC
 #define EVSE_WIFI_5_LOC "Test"
 #endif
 #ifndef EVSE_WIFI_5_SSID
-#define EVSE_WIFI_5_SSID "test"
+#define EVSE_WIFI_5_SSID ""
 #endif
 #ifndef EVSE_WIFI_5_PASS
-#define EVSE_WIFI_5_PASS "12345678"
+#define EVSE_WIFI_5_PASS ""
 #endif
 
-static const char* kAdminUser = EVSE_ADMIN_USER;
-static const char* kAdminPassword = EVSE_ADMIN_PASSWORD;
+// Panel kullanici adi/parolasi artik auth.cpp'de (NVS'de tuzlu ozet). EVSE_ADMIN_PASSWORD
+// yalnizca ilk acilistaki varsayilan paroladir.
 static const char* kHostNameBase = EVSE_HOSTNAME;
 static const char* kStationName = "Rotosis Robotlu Otomasyon";
 static const char* kDefaultStationAddress = "Fevzi Cakmak Mah. Sehit Ibrahim Betin Cd. No:4/F, Arli Sanayi Sitesi, Karatay / Konya";
 static constexpr double kDefaultMapLat = 37.94559;
 static constexpr double kDefaultMapLng = 32.58082;
 static constexpr uint16_t kMapRadiusM = 520;
-static constexpr size_t kMaxUserScreenCssLen = 4096;
 static char s_deviceMac[18] = "";
 static char s_stationCode[7] = "";
 static char s_stationLabel[32] = "Istasyon";
@@ -171,7 +174,6 @@ static bool s_customWifiEnabled = false;
 static bool s_wifiUseDhcp = true;
 static String s_customWifiSsid;
 static String s_customWifiPassword;
-static String s_userScreenCustomCss;
 static IPAddress s_staticIp(192, 168, 1, 200);
 static IPAddress s_staticGateway(192, 168, 1, 1);
 static IPAddress s_staticSubnet(255, 255, 255, 0);
@@ -199,7 +201,7 @@ static WebServer server(80);
 static bool wifiEventsReady = false;
 static uint32_t s_lastHttpRequestMs = 0;
 static uint32_t s_successfulHttpResponses = 0;
-static char s_jsonBuf[4096];
+static char s_jsonBuf[5120];  // /status + bulut + planli sarj alanlari
 static bool s_mdnsEnabled = false;
 static TaskHandle_t s_webTaskHandle = nullptr;
 static bool s_serverStarted = false;
@@ -218,6 +220,7 @@ struct ManualOtaState {
   bool active = false;
   bool updateBegun = false;
   bool success = false;
+  bool authorized = false;  // bu yukleme gecerli bilet/jetonla mi basladi
   String uploadedName;
   String lastError;
 };
@@ -460,20 +463,9 @@ static void saveCurrentLimitSetting() {
   s_resetPrefs.putFloat("limitA", g_targetCurrentLimitA);
 }
 
-static void loadUserScreenCssSetting() {
-  if (!s_resetPrefsReady) {
-    s_userScreenCustomCss = "";
-    return;
-  }
-  s_userScreenCustomCss = s_resetPrefs.getString("user_css", "");
-  if (s_userScreenCustomCss.length() > kMaxUserScreenCssLen) {
-    s_userScreenCustomCss.remove(kMaxUserScreenCssLen);
-  }
-}
-
-static void saveUserScreenCssSetting() {
-  if (!s_resetPrefsReady) return;
-  s_resetPrefs.putString("user_css", s_userScreenCustomCss);
+// Kullanici CSS duzenleyici kaldirildi, fakat bu karttaki eski NVS kaydi silinmez.
+static void purgeLegacyUserCss() {
+  (void)s_resetPrefsReady;
 }
 
 static void refreshDeviceIdentity() {
@@ -515,6 +507,7 @@ static void resetManualOtaState() {
   s_manualOta.active = false;
   s_manualOta.updateBegun = false;
   s_manualOta.success = false;
+  s_manualOta.authorized = false;
   s_manualOta.uploadedName = "";
   s_manualOta.lastError = "";
 }
@@ -577,30 +570,6 @@ static float clampFloatArg(const String& v, float minVal, float maxVal, float fa
 static float safeFinite(float v) {
   if (isnan(v) || isinf(v)) return 0.0f;
   return v;
-}
-
-static String htmlEscape(const String& value) {
-  String out;
-  out.reserve(value.length() + 16);
-  for (size_t i = 0; i < value.length(); ++i) {
-    const char c = value[i];
-    switch (c) {
-      case '&': out += F("&amp;"); break;
-      case '<': out += F("&lt;"); break;
-      case '>': out += F("&gt;"); break;
-      case '"': out += F("&quot;"); break;
-      case '\'': out += F("&#39;"); break;
-      default: out += c; break;
-    }
-  }
-  return out;
-}
-
-static String styleEscape(const String& value) {
-  String out = value;
-  out.replace("</style", "<\\/style");
-  out.replace("</STYLE", "<\\/STYLE");
-  return out;
 }
 
 static String jsonEscape(const String& value) {
@@ -683,11 +652,14 @@ static const char* wifiLocationForSsid(const String& connectedSsid) {
   return "Bilinmiyor";
 }
 
+// Yonetim veri uclari "Authorization: Bearer <jeton>" ister (bkz. auth.cpp).
+// Jeton yoksa / gecersizse 401 JSON doner; tarayici Basic Auth penceresi acilmaz.
 static bool requireAdminAuth() {
-  if (server.authenticate(kAdminUser, kAdminPassword)) {
+  server.sendHeader("Cache-Control", "no-store");
+  if (auth_check_bearer(server.header("Authorization"))) {
     return true;
   }
-  server.requestAuthentication(BASIC_AUTH, "RotosisEVSE Admin", "Sifre gerekli");
+  server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
   return false;
 }
 
@@ -764,413 +736,343 @@ static void noteResetEvent(bool clearNow, bool clearHistory) {
 
 // 2) Sayfaya gomulu on yuz kaynaklari burada baslar.
 static const char USER_HTML[] PROGMEM = R"HTML(
-
-<!DOCTYPE html><html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RotosisEVSE</title>
-<style>
-*{box-sizing:border-box}
-:root{--bg:#06121d;--bg2:#0a2233;--panel:rgba(8,24,37,.78);--panelStrong:rgba(12,31,47,.92);--line:rgba(72,209,164,.18);--text:#ecfbf6;--muted:#8daea4;--accent:#37d8a2;--accentDeep:#15b987;--accentSoft:rgba(55,216,162,.18);--warn:#b6ef72;--err:#ff7d7d;--shadow:0 24px 50px rgba(1,9,16,.46);--shadowSoft:0 14px 32px rgba(2,10,18,.34);}
-html,body{margin:0;padding:0}
-body{position:relative;overflow-x:hidden;font-family:"Avenir Next","Segoe UI","Trebuchet MS",sans-serif;color:var(--text);min-height:100vh;background:
-radial-gradient(circle at 15% 15%, rgba(0,255,255,.15) 0%, rgba(0,255,255,0) 35%),
-radial-gradient(circle at 85% 85%, rgba(138,43,226,.15) 0%, rgba(138,43,226,0) 35%),
-radial-gradient(circle at 50% 50%, rgba(255,215,0,.1) 0%, rgba(255,215,0,0) 50%),
-linear-gradient(180deg,#0d0d0d 0%,#1a1a2e 40%,#16213e 80%,#0f0f23 100%);}
-body::after{content:"";position:fixed;z-index:0;border-radius:999px;pointer-events:none;filter:blur(18px);}
-body::after{width:290px;height:290px;right:-106px;bottom:92px;background:radial-gradient(circle, rgba(0,255,255,.2) 0%, rgba(0,255,255,0) 70%);animation:floatGlowB 18s ease-in-out infinite;}
-body.state-A{--accent:#66c7ff;--accentDeep:#249ff0;--accentSoft:rgba(102,199,255,.18)}
-body.state-B{--accent:#7ae6c4;--accentDeep:#2fc79a;--accentSoft:rgba(122,230,196,.18)}
-body.state-C,body.state-D{--accent:#37d8a2;--accentDeep:#15b987;--accentSoft:rgba(55,216,162,.18)}
-body.state-E,body.state-F{--accent:#ff8b8b;--accentDeep:#ff6464;--accentSoft:rgba(255,139,139,.18)}
-.screenShell{position:relative;z-index:1;max-width:420px;margin:0 auto;padding:14px 12px 22px;}
-.app{position:relative;z-index:1;max-width:396px;min-height:calc(100vh - 44px);margin:0 auto;padding:0 0 18px;animation:screenEnter .82s cubic-bezier(.22,1,.36,1);}
-.phaseMeta{margin-top:16px;display:flex;justify-content:space-between;gap:10px;font-size:14px;color:#8bb5a6;}
-.phaseMeta span{flex:1;padding:10px 12px;border-radius:16px;background:linear-gradient(180deg,rgba(12,32,50,.58),rgba(8,22,36,.38));border:1px solid rgba(151,210,255,.08);text-align:center}
-.topbar{display:grid;grid-template-columns:44px 1fr 52px;align-items:center;gap:10px;}
-.backBtn{width:44px;height:44px;border-radius:16px;display:grid;place-items:center;text-decoration:none;color:#dff9f0;font-size:30px;line-height:1;background:linear-gradient(180deg,rgba(18,42,61,.92),rgba(9,22,35,.88));border:1px solid rgba(79,225,178,.16);box-shadow:var(--shadowSoft);}
-.statusWrap{display:flex;justify-content:center;}
-.statusPill{display:inline-flex;align-items:center;gap:10px;padding:11px 16px;border-radius:999px;background:linear-gradient(135deg,rgba(13,31,46,.96),rgba(7,20,31,.9));border:2px solid color-mix(in srgb,var(--accentDeep) 52%, white);box-shadow:0 16px 30px rgba(2,10,18,.28);font-weight:800;font-size:15px;letter-spacing:.01em;color:#eefcf8;animation:fadeLift .82s .04s both;}
-.statusIcon{width:24px;height:24px;display:grid;place-items:center;color:var(--accent);}
-.statusIcon svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
-.vehicleName{font-weight:800;}
-.pillDash{opacity:.55}
-.sync{justify-self:end;min-width:52px;height:36px;padding:0 10px;border-radius:999px;background:linear-gradient(180deg,rgba(15,35,54,.94),rgba(8,19,30,.9));border:1px solid rgba(87,209,171,.16);display:flex;align-items:center;justify-content:center;gap:7px;font-size:11px;font-weight:800;letter-spacing:.08em;color:#8fbbb0;text-transform:uppercase;box-shadow:var(--shadowSoft);}
-.sync::before{content:"";width:8px;height:8px;border-radius:999px;background:#3e6f84;box-shadow:0 0 0 4px rgba(62,111,132,.18);}
-.sync.live{color:#dffff4;border-color:rgba(55,216,162,.26);background:linear-gradient(180deg,rgba(18,49,58,.96),rgba(9,26,35,.94));}
-.sync.live::before{background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 18%, transparent);animation:livePulse 1.8s ease-in-out infinite;}
-.headline{display:none}
-.dateLine{font-size:19px;font-weight:700;letter-spacing:.01em;color:#bde9ff;}
-.locationLine{margin-top:8px;font-size:18px;line-height:1.35;font-weight:700;color:#f1fffb;}
-.hintLine{margin-top:6px;font-size:14px;color:#84c8b5;}
-.metricCard{max-width:338px;margin:20px auto 0;padding:20px 22px;border-radius:26px;background:linear-gradient(180deg,rgba(10,28,43,.82),rgba(7,19,31,.62));border:1px solid rgba(151,210,255,.14);box-shadow:0 24px 40px rgba(2,10,18,.28);backdrop-filter:blur(20px);animation:fadeLift 1s .26s both;}
-.metricCard--stats{max-width:338px}
-.metricCardArt{display:flex;justify-content:center;align-items:center;margin:0 0 14px;padding:6px 0 2px;color:rgba(208,237,255,.92)}
-.vehicleStage{position:relative;width:min(78%,228px);isolation:isolate}
-.vehicleStage img{display:block;width:100%;height:auto;opacity:.95;transform:rotate(90deg);transform-origin:50% 50%;filter:drop-shadow(0 12px 24px rgba(4,16,28,.22))}
-.chargeOverlay{position:absolute;inset:0;pointer-events:none}
-.chargeAura{position:absolute;left:19%;right:19%;top:26%;bottom:18%;border-radius:999px;background:
-radial-gradient(circle at 50% 50%,rgba(124,247,215,.26) 0%,rgba(124,247,215,.13) 32%,rgba(124,247,215,0) 72%);
-opacity:.18;transform:scale(.9);filter:blur(10px);transition:opacity .35s ease,transform .35s ease}
-.chargeBeam{position:absolute;left:34%;right:34%;top:19%;bottom:15%;border-radius:999px;background:
-linear-gradient(180deg,rgba(123,247,213,0) 0%,rgba(123,247,213,.12) 14%,rgba(207,255,245,.92) 34%,rgba(123,247,213,.18) 56%,rgba(123,247,213,0) 100%);
-opacity:.2;filter:blur(5px);transform-origin:50% 50%;animation:chargeBeamFlow var(--chargeSpeed,2.6s) linear infinite}
-.chargePulse{position:absolute;left:50%;width:13%;aspect-ratio:1;border-radius:999px;transform:translateX(-50%);background:
-radial-gradient(circle,rgba(240,255,251,.98) 0%,rgba(136,245,210,.82) 38%,rgba(76,219,171,.08) 72%,rgba(76,219,171,0) 100%);
-box-shadow:0 0 18px rgba(122,246,211,.42),0 0 34px rgba(122,246,211,.22);opacity:0;animation:chargeTravel var(--chargeSpeed,2.6s) linear infinite}
-.chargePulse.p2{animation-delay:calc(var(--chargeSpeed,2.6s)/3)}
-.chargePulse.p3{animation-delay:calc((var(--chargeSpeed,2.6s)/3)*2)}
-.chargeSpark{position:absolute;left:50%;top:45%;width:20%;height:20%;transform:translate(-50%,-50%) rotate(-6deg);opacity:.18;filter:drop-shadow(0 0 12px rgba(142,248,219,.4));animation:sparkFlash 2.1s ease-in-out infinite}
-.chargeSpark svg{display:block;width:100%;height:100%;fill:#dffff6}
-.vehicleStage .chargeAura,.vehicleStage .chargeBeam,.vehicleStage .chargePulse,.vehicleStage .chargeSpark{animation-play-state:paused}
-.vehicleStage.is-charging .chargeAura{opacity:var(--chargeOpacity,.72);transform:scale(1.04)}
-.vehicleStage.is-charging .chargeBeam,.vehicleStage.is-charging .chargePulse,.vehicleStage.is-charging .chargeSpark{animation-play-state:running}
-.vehicleStage.is-charging .chargeBeam{opacity:calc(.16 + (var(--chargeOpacity,.72)*.7))}
-body.state-B .vehicleStage .chargeAura{background:radial-gradient(circle at 50% 50%,rgba(255,214,107,.24) 0%,rgba(255,214,107,.11) 34%,rgba(255,214,107,0) 72%)}
-body.state-B .vehicleStage .chargeBeam{background:linear-gradient(180deg,rgba(255,214,107,0) 0%,rgba(255,214,107,.12) 14%,rgba(255,249,220,.92) 34%,rgba(255,214,107,.18) 56%,rgba(255,214,107,0) 100%)}
-body.state-B .vehicleStage .chargePulse{background:radial-gradient(circle,rgba(255,252,241,.98) 0%,rgba(255,214,107,.84) 38%,rgba(255,214,107,.08) 72%,rgba(255,214,107,0) 100%);box-shadow:0 0 18px rgba(255,214,107,.4),0 0 34px rgba(255,214,107,.2)}
-body.state-B .vehicleStage .chargeSpark svg{fill:#fff5cb}
-body.state-C .vehicleStage .chargeAura,body.state-D .vehicleStage .chargeAura{background:radial-gradient(circle at 50% 50%,rgba(118,205,255,.26) 0%,rgba(118,205,255,.12) 34%,rgba(118,205,255,0) 72%)}
-body.state-C .vehicleStage .chargeBeam,body.state-D .vehicleStage .chargeBeam{background:linear-gradient(180deg,rgba(118,205,255,0) 0%,rgba(118,205,255,.14) 14%,rgba(236,249,255,.94) 34%,rgba(118,205,255,.18) 56%,rgba(118,205,255,0) 100%)}
-body.state-C .vehicleStage .chargePulse,body.state-D .vehicleStage .chargePulse{background:radial-gradient(circle,rgba(245,252,255,.98) 0%,rgba(118,205,255,.84) 38%,rgba(118,205,255,.08) 72%,rgba(118,205,255,0) 100%);box-shadow:0 0 18px rgba(118,205,255,.42),0 0 34px rgba(118,205,255,.22)}
-body.state-C .vehicleStage .chargeSpark svg,body.state-D .vehicleStage .chargeSpark svg{fill:#ddf4ff}
-body.state-E .vehicleStage .chargeAura,body.state-F .vehicleStage .chargeAura{background:radial-gradient(circle at 50% 50%,rgba(255,151,151,.22) 0%,rgba(255,151,151,.10) 34%,rgba(255,151,151,0) 72%)}
-body.state-E .vehicleStage .chargeBeam,body.state-F .vehicleStage .chargeBeam{background:linear-gradient(180deg,rgba(255,140,140,0) 0%,rgba(255,140,140,.14) 14%,rgba(255,238,238,.92) 34%,rgba(255,140,140,.16) 56%,rgba(255,140,140,0) 100%)}
-body.state-E .vehicleStage .chargePulse,body.state-F .vehicleStage .chargePulse{background:radial-gradient(circle,rgba(255,248,248,.98) 0%,rgba(255,150,150,.82) 38%,rgba(255,120,120,.08) 72%,rgba(255,120,120,0) 100%);box-shadow:0 0 18px rgba(255,142,142,.38),0 0 34px rgba(255,142,142,.2)}
-body.state-E .vehicleStage .chargeSpark svg,body.state-F .vehicleStage .chargeSpark svg{fill:#fff1f1}
-.metricCardDate{margin:2px 0 14px;padding:11px 14px;border-radius:18px;text-align:center;font-size:16px;font-weight:800;letter-spacing:-.02em;color:#d5f0ff;background:linear-gradient(180deg,rgba(12,32,50,.68),rgba(7,19,31,.48));border:1px solid rgba(151,210,255,.10);box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
-.stationMeta{margin:0 0 14px;display:grid;gap:8px}
-.stationMetaLine{padding:10px 12px;border-radius:16px;background:linear-gradient(180deg,rgba(12,32,50,.54),rgba(7,19,31,.38));border:1px solid rgba(151,210,255,.08);box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
-.stationMetaLabel{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#8cb9cb}
-.stationMetaValue{margin-top:4px;color:#effcff;font-size:15px;font-weight:800;line-height:1.35;word-break:break-word}
-.stationMetaValue.muted{color:#c4e7f4;font-size:13px;font-weight:700}
-.metricLabel{font-size:17px;color:#91cbb9;font-weight:700;}
-.metricHero{margin-top:10px;font-size:46px;line-height:1;font-weight:800;letter-spacing:-.04em;color:#f1fffb;}
-.metricHero .unit{font-size:.58em;font-weight:700;letter-spacing:-.01em;color:#7fe5c1;}
-.metricsGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 16px;}
-.metricCell{min-width:0;padding:14px 15px 15px;border-radius:20px;background:linear-gradient(180deg,rgba(12,32,50,.64),rgba(8,22,36,.42));border:1px solid rgba(151,210,255,.10);box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 10px 22px rgba(2,10,18,.12);}
-.metricCell--power{grid-column:1/-1;padding:15px 18px 17px;border-radius:22px;background:linear-gradient(180deg,rgba(14,38,60,.82),rgba(8,22,36,.52));border:1px solid rgba(151,210,255,.13);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 12px 24px rgba(2,10,18,.14);text-align:center;}
-.metricCell--power .metricHead{justify-content:center;font-size:15px;}
-.metricCell--power .metricValue{margin-top:10px;font-size:38px;line-height:1;color:#eefcf8}
-.metricCell--power .metricValue .unit{font-size:.44em;font-weight:700;color:#7fe5c1}
-.metricHead{display:flex;align-items:center;gap:8px;color:#9fcfc2;font-size:15px;font-weight:800;}
-.metricHead svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto;}
-.metricValue{margin-top:10px;font-size:24px;font-weight:800;letter-spacing:-.03em;color:#f0fcf8;}
-.metricValue .unit{font-size:.82em;color:#6fd8b1;}
-.installBtn{display:none;margin-top:14px;width:100%;padding:14px 16px;border-radius:18px;border:1px solid rgba(76,210,166,.16);background:linear-gradient(135deg,rgba(13,40,53,.96),rgba(7,22,31,.9));color:#dcfff2;font-size:14px;font-weight:800;box-shadow:var(--shadowSoft);}
-@keyframes screenEnter{0%{opacity:0;transform:translateY(18px)}100%{opacity:1;transform:translateY(0)}}
-@keyframes fadeLift{0%{opacity:0;transform:translateY(14px)}100%{opacity:1;transform:translateY(0)}}
-@keyframes floatGlowA{0%,100%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(22px,18px,0) scale(1.08)}}
-@keyframes floatGlowB{0%,100%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(-18px,-14px,0) scale(1.1)}}
-@keyframes livePulse{0%,100%{transform:scale(1)}50%{transform:scale(1.22)}}
-@keyframes chargeTravel{0%{top:74%;opacity:0;transform:translateX(-50%) scale(.76)}12%{opacity:calc(.22 + var(--chargeOpacity,.72))}50%{opacity:calc(.35 + var(--chargeOpacity,.72)*.75)}100%{top:12%;opacity:0;transform:translateX(-50%) scale(1.06)}}
-@keyframes chargeBeamFlow{0%{transform:translateY(10%) scaleY(.92);opacity:.05}45%{transform:translateY(-2%) scaleY(1);opacity:calc(.12 + var(--chargeOpacity,.72)*.72)}100%{transform:translateY(-12%) scaleY(1.05);opacity:.04}}
-@keyframes sparkFlash{0%,100%{transform:translate(-50%,-50%) rotate(-6deg) scale(.88);opacity:.08}38%{transform:translate(-50%,-50%) rotate(2deg) scale(1.08);opacity:calc(.16 + var(--chargeOpacity,.72)*.7)}52%{transform:translate(-50%,-50%) rotate(-4deg) scale(.94);opacity:.2}}
-@media(max-width:780px){.screenShell{padding:12px 10px 20px}.app{max-width:100%;min-height:calc(100vh - 30px)}.metricCard{max-width:94%;margin-top:18px;padding:18px 18px}.vehicleStage{width:min(74%,210px)}}
-@media(max-width:390px){.screenShell{padding:10px 8px 18px}.statusPill{padding:10px 13px;font-size:14px}.dateLine{font-size:18px}.locationLine{font-size:16px}.metricHero{font-size:40px}.metricValue{font-size:19px}.metricCard{margin-top:16px;padding:16px 16px}.metricCardArt{margin-bottom:12px}.vehicleStage{width:min(72%,190px)}}
-__USER_CUSTOM_CSS__
-</style>
+<!DOCTYPE html><html lang="tr"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0c425e">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RTevCharge"><meta name="format-detection" content="telephone=no">
+<title>RTevCharge</title>
 <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#0a1d2f">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="RotosisEVSE">
-</head><body class="state-A">
-<div class="screenShell">
-<div class="app">
-  <div class="topbar">
-    <a class="backBtn" href="/settings" aria-label="Ayarlar" title="Ayarlar">&#9881;</a>
-    <div class="statusWrap">
-      <div class="statusPill" id="statusPill">
-        <span class="statusIcon" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M5 14.5V9.8l2.2-2.3h9.6L19 9.8v4.7"></path><path d="M7.7 7.5l1.4-2h5.8l1.4 2"></path><path d="M8 14.5h8"></path><path d="M10.5 12l-1.2 2.5h2.1l-1 2.5 3-4h-2.1l1.1-2z"></path></svg>
-        </span>
-        <span id="stateName">Haz&#305;r</span>
-      </div>
-    </div>
-    <div class="sync" id="sync">WAIT</div>
-  </div>
+<link rel="icon" href="/app-icon.svg" type="image/svg+xml">
+<style>
+:root{--lacivert:#0c425e;--turuncu:#ff5a1f;--mavi:#00b2ff;--zemin:#f3f6f8;--yuzey:#fff;--kenar:#d5dee5;--metin:#14212b;--soluk:#4d5f6d;--iyi:#11703f;--iyi-z:#e2f5ea;--kotu:#b3261e;--kotu-z:#fbe6e4;--uyari:#8a5a00;--uyari-z:#fff3d6;--bilgi:#00618c;--bilgi-z:#e0f3fc;--dugme:#0c425e;--dugme-metin:#fff;--odak:#ff5a1f;--kod:#f0f3f6;--arac:#1f5f80;--st:env(safe-area-inset-top);--sb:env(safe-area-inset-bottom);--sl:env(safe-area-inset-left);--sr:env(safe-area-inset-right)}
+@media(prefers-color-scheme:dark){:root{--zemin:#0b1a24;--yuzey:#11283a;--kenar:#24435a;--metin:#e7eef3;--soluk:#a9bccb;--iyi:#5fd896;--iyi-z:#123526;--kotu:#ff8a80;--kotu-z:#3a1a1a;--uyari:#ffc760;--uyari-z:#3a2c0e;--bilgi:#6fd3ff;--bilgi-z:#0c3047;--dugme:#00b2ff;--dugme-metin:#06141d;--kod:#0a1720;--arac:#4a8db3}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{-webkit-text-size-adjust:100%;font-size:16px}
+@supports(font:-apple-system-body){html{font:-apple-system-body}}
+body{margin:0;background:var(--zemin);color:var(--metin);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:1rem;line-height:1.45;overscroll-behavior-y:none}
+[hidden]{display:none!important}
+:focus-visible{outline:3px solid var(--odak);outline-offset:2px}
+a,button{touch-action:manipulation}
+.dugme,button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;padding:10px 18px;border-radius:10px;border:1px solid transparent;background:var(--dugme);color:var(--dugme-metin);font:inherit;font-weight:700;text-decoration:none;cursor:pointer}
+.dugme.ik,button.ik{background:transparent;color:var(--metin);border-color:var(--kenar)}
+svg.i{width:1.5em;height:1.5em;flex:none}
+/* ust bar */
+header{background:var(--lacivert);color:#fff;border-bottom:3px solid var(--turuncu);padding:var(--st) var(--sr) 0 var(--sl)}
+.ust{display:flex;align-items:center;gap:12px;padding:10px 16px;min-height:60px;max-width:560px;margin:0 auto}
+.lg{width:36px;height:36px;flex:none}
+.ist{flex:1;min-width:0;line-height:1.25}
+.ist b{display:block;font-size:1.05rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ist small{display:block;font-size:.8rem;opacity:.85;overflow-wrap:anywhere}
+.canli{display:inline-flex;align-items:center;gap:6px;font-size:.75rem;font-weight:700;letter-spacing:.04em;padding:4px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.5);flex:none}
+.canli::before{content:"";width:8px;height:8px;border-radius:50%;background:#8aa3b3}
+.canli.on::before{background:#5fd896}
+#netStrip{padding:10px calc(16px + var(--sr)) 10px calc(16px + var(--sl));font-size:.9rem;font-weight:600;text-align:center}
+#netStrip.uyari{background:var(--uyari-z);color:var(--uyari)}#netStrip.kotu{background:var(--kotu-z);color:var(--kotu)}
+main{max-width:560px;margin:0 auto;padding:16px calc(16px + var(--sr)) calc(24px + var(--sb)) calc(16px + var(--sl));display:grid;gap:14px}
+.kart{background:var(--yuzey);border:1px solid var(--kenar);border-radius:14px;padding:16px;min-width:0}
+.kart h2{margin:0 0 10px;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--soluk);display:flex;align-items:center;gap:8px}
+.kart h2 .s{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:600}
+.alarm{padding:12px 14px;border-radius:10px;font-weight:600;border-left:5px solid;display:flex;gap:10px;align-items:flex-start}
+.alarm.l1{background:var(--uyari-z);color:var(--uyari)}.alarm.l2{background:var(--kotu-z);color:var(--kotu)}
+/* durum karti: renk data-s ile */
+.durum{display:flex;align-items:center;gap:16px;padding:20px 18px;border-left:8px solid var(--soluk);--r:var(--soluk);--rz:var(--kod)}
+.durum[data-s=A]{--r:var(--soluk);--rz:var(--kod)}
+.durum[data-s=B]{--r:var(--bilgi);--rz:var(--bilgi-z)}
+.durum[data-s=C],.durum[data-s=D]{--r:var(--iyi);--rz:var(--iyi-z)}
+.durum[data-s=E],.durum[data-s=F]{--r:var(--kotu);--rz:var(--kotu-z)}
+.durum{border-left-color:var(--r);flex-wrap:wrap}
+/* arac gorseli */
+.arac{flex:1 1 100%;width:100%;height:auto;max-height:200px}
+.arac .zemin{stroke:var(--kenar);stroke-width:2}
+.arac .post{fill:var(--lacivert);stroke:var(--mavi);stroke-width:1.5}
+.arac .ekr{fill:var(--mavi)}
+.arac .tepe{fill:var(--turuncu)}
+.arac .post,.arac .ekr,.arac .tepe{transition:fill .4s,stroke .4s}
+:is([data-s=C],[data-s=D]) .arac .post{fill:#12803f;stroke:#5fd896}:is([data-s=C],[data-s=D]) .arac .ekr{fill:#c8f7dc}:is([data-s=C],[data-s=D]) .arac .tepe{fill:#5fd896}
+.arac .kab{fill:none;stroke:var(--soluk);stroke-width:1.7;stroke-linecap:round}
+.arac .fis{fill:var(--soluk)}
+.kaporta{fill:var(--arac);stroke:var(--arac);stroke-width:2;stroke-linejoin:round}
+.cam{fill:var(--zemin);opacity:.8}
+.ter{fill:#1b2730}.jant{fill:var(--kenar)}
+.port{fill:var(--soluk)}
+.etk{font-size:8px;font-weight:700;letter-spacing:.12em;fill:var(--soluk)}
+.akim{fill:none;stroke:#d6ffe6;stroke-width:2.4;stroke-linecap:round;stroke-dasharray:7 93;filter:drop-shadow(0 0 1.6px #8cffc0)}
+.parilti{fill:var(--iyi)}
+.batt rect{fill:none;stroke:var(--iyi);stroke-width:2}.batt .bc{fill:var(--iyi)}
+.batt .bdol{fill:var(--iyi);stroke:none;transform-box:fill-box;transform-origin:left}
+.uyar path{fill:var(--kotu-z);stroke:var(--kotu);stroke-width:2;stroke-linejoin:round}.uyar .un{stroke-linecap:round}
+#aracGorsel,.kab,.fis,.akim,.parilti,.batt,.uyar,.kaporta,.cam,.port{transition:opacity .4s,fill .4s,stroke .4s}
+.kB,.akim,.parilti,.batt,.uyar{opacity:0}
+[data-s=A] #aracGorsel{opacity:.45}
+[data-s=A] .kaporta{fill:none;stroke:var(--soluk);stroke-dasharray:5 4}
+[data-s=A] .cam{opacity:0}
+.durum:not([data-s=A]) .kA{opacity:0}
+.durum:not([data-s=A]) .kB{opacity:1}
+[data-s=B] .kB{stroke:var(--mavi)}[data-s=B] .port{fill:var(--mavi)}
+:is([data-s=C],[data-s=D]) .kB{stroke:var(--iyi)}
+:is([data-s=C],[data-s=D]) .port{fill:var(--iyi);animation:nb 1.2s infinite}
+[data-s=B] .akim{opacity:1;stroke:#d2f4ff;filter:drop-shadow(0 0 1.6px #5fd0ff);animation:ak2 2.6s linear infinite}
+:is([data-s=C],[data-s=D]) .akim{opacity:1;animation:ak2 1.3s linear infinite}
+:is([data-s=C],[data-s=D]) .parilti{opacity:.3;animation:nb 2.4s infinite}
+:is([data-s=C],[data-s=D]) .batt{opacity:1}
+:is([data-s=C],[data-s=D]) .bdol{animation:bd 3s ease-in-out infinite}
+:is([data-s=E],[data-s=F]) .kaporta{stroke:var(--kotu)}
+:is([data-s=E],[data-s=F]) .kB{stroke:var(--kotu)}
+:is([data-s=E],[data-s=F]) .port{fill:var(--kotu)}
+:is([data-s=E],[data-s=F]) .uyar{opacity:1;animation:nb 1s infinite}
+.sw{opacity:0;mix-blend-mode:screen}
+.swp{transform:translateX(-90px)}
+:is([data-s=C],[data-s=D]) .sw{opacity:.95}
+:is([data-s=C],[data-s=D]) .swp{animation:sw 2.2s ease-in-out infinite}
+:is([data-s=C],[data-s=D]) #aracGorsel{filter:drop-shadow(0 0 3px rgba(40,230,140,.85))}
+@keyframes sw{0%{transform:translateX(-90px)}100%{transform:translateX(250px)}}
+.swB,.swR{transition:opacity .4s;opacity:0;mix-blend-mode:screen}
+.durum[data-s=B] .swB{opacity:.9}
+:is(.durum[data-s=E],.durum[data-s=F]) .swR{opacity:.9}
+.durum[data-s=B] #aracGorsel{filter:drop-shadow(0 0 3px rgba(0,178,255,.9))}
+:is(.durum[data-s=E],.durum[data-s=F]) #aracGorsel{filter:drop-shadow(0 0 3px rgba(255,60,50,.9))}
+.durum[data-s=B] .swB{animation:nfB 3.2s ease-in-out infinite}
+:is(.durum[data-s=E],.durum[data-s=F]) .swR{animation:nfR 1.6s ease-in-out infinite}
+.durum[data-s=B] #aracGorsel{animation:hlB 3.2s ease-in-out infinite}
+:is(.durum[data-s=E],.durum[data-s=F]) #aracGorsel{animation:hlR 1.6s ease-in-out infinite}
+@keyframes nfB{0%,100%{opacity:.35}50%{opacity:1}}
+@keyframes nfR{0%,100%{opacity:.4}50%{opacity:1}}
+@keyframes hlB{0%,100%{filter:drop-shadow(0 0 1px rgba(0,178,255,.4))}50%{filter:drop-shadow(0 0 5px rgba(0,178,255,1))}}
+@keyframes hlR{0%,100%{filter:drop-shadow(0 0 1px rgba(255,60,50,.4))}50%{filter:drop-shadow(0 0 5px rgba(255,60,50,1))}}
+@keyframes ak{to{stroke-dashoffset:-24}}
+@keyframes ak2{from{stroke-dashoffset:0}to{stroke-dashoffset:100}}
+@keyframes bd{0%{transform:scaleX(.1)}85%,100%{transform:scaleX(1)}}
+.dIk{width:72px;height:72px;border-radius:18px;display:grid;place-items:center;background:var(--rz);color:var(--r);flex:none}
+.dIk svg{width:44px;height:44px}
+.durum[data-s=C] .dIk svg,.durum[data-s=D] .dIk svg{animation:nb 1.6s ease-in-out infinite}
+@keyframes nb{50%{opacity:.45}}
+.dT{font-size:1.45rem;font-weight:800;line-height:1.2;margin:0}
+.dA{color:var(--soluk);font-size:.95rem;margin:4px 0 0}
+/* canli sarj */
+.guc{font-size:3.4rem;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;margin:4px 0 14px;overflow-wrap:anywhere}
+.guc u,.kv u{text-decoration:none;font-size:1rem;font-weight:600;color:var(--soluk);margin-left:4px}
+.kvs{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.kv{background:var(--kod);border-radius:10px;padding:10px 12px}
+.kv small{display:block;font-size:.78rem;color:var(--soluk);font-weight:600}
+.kv b{font-size:1.35rem;font-variant-numeric:tabular-nums}
+.ph{display:grid;grid-template-columns:2.2em 1fr 4.6em;align-items:center;gap:10px;margin-top:12px}
+.ph span{font-size:.8rem;font-weight:700;color:var(--soluk)}
+.ph b{text-align:right;font-variant-numeric:tabular-nums}
+.mt{height:12px;border-radius:9px;background:var(--kod);overflow:hidden}
+.mt i{display:block;height:100%;width:0;background:var(--mavi);transition:width .6s}
+.lim{margin:14px 0 0;font-size:.88rem;color:var(--soluk)}
+/* QR yonlendirme */
+.qr{display:flex;gap:16px;align-items:center;border-top:4px solid var(--turuncu)}
+.qr svg.q{width:96px;height:96px;flex:none;color:var(--lacivert)}
+@media(prefers-color-scheme:dark){.qr svg.q{color:var(--mavi)}}
+.qr p{margin:0 0 12px;font-weight:600}
+.qr .dugme{width:100%}
+@media(max-width:360px){.qr{flex-direction:column;text-align:center}}
+dl{display:grid;grid-template-columns:1fr auto;gap:8px 12px;margin:0}
+dt{color:var(--soluk)}dd{margin:0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+.bos{color:var(--soluk);font-size:.92rem;margin:0;display:flex;gap:10px;align-items:center}
+footer{text-align:center;font-size:.82rem;color:var(--soluk);display:grid;gap:8px;justify-items:center}
+footer a{display:inline-flex;align-items:center;min-height:44px;padding:0 12px;color:var(--soluk)}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="lg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#0c425e"/><g transform="translate(5 4.4) scale(.6)"><path d="M69.93 88.81C69.64 88.50 69.21 87.87 68.97 87.41C68.03 85.58 67.66 84.92 67.34 84.45C67.15 84.18 67.00 83.89 67.00 83.81C67.00 83.72 66.80 83.36 66.55 83.00C66.30 82.64 66.04 82.17 65.97 81.96C65.89 81.74 65.71 81.39 65.55 81.19C65.40 80.98 65.15 80.53 65.00 80.19C64.85 79.84 64.63 79.45 64.50 79.31C64.37 79.17 64.15 78.79 64.01 78.46C63.87 78.13 63.62 77.68 63.46 77.46C63.30 77.24 63.09 76.87 63.00 76.62C62.90 76.38 62.70 76.02 62.55 75.81C62.39 75.61 62.15 75.16 62.00 74.81C61.85 74.47 61.63 74.08 61.50 73.94C61.37 73.80 61.15 73.41 61.00 73.06C60.85 72.72 60.61 72.27 60.45 72.06C60.30 71.86 60.10 71.49 60.00 71.25C59.91 71.01 59.70 70.63 59.54 70.41C59.38 70.19 59.13 69.74 58.99 69.41C58.85 69.08 58.63 68.70 58.50 68.56C58.37 68.42 58.15 68.04 58.01 67.71C57.87 67.38 57.62 66.93 57.46 66.71C57.29 66.49 57.10 66.14 57.03 65.92C56.96 65.70 56.70 65.23 56.45 64.87C56.20 64.52 56.00 64.15 56.00 64.06C56.00 63.97 55.81 63.63 55.59 63.30C55.36 62.96 55.10 62.49 55.00 62.25C54.90 62.01 54.64 61.54 54.41 61.20C54.19 60.87 54.00 60.53 54.00 60.45C54.00 60.38 53.77 59.98 53.50 59.58C53.22 59.17 53.00 58.77 53.00 58.68C53.00 58.60 52.81 58.25 52.59 57.92C52.36 57.59 52.10 57.12 52.00 56.88C51.90 56.63 51.64 56.16 51.41 55.83C51.19 55.50 51.00 55.15 51.00 55.07C51.00 54.98 50.85 54.69 50.66 54.42C50.48 54.16 50.15 53.60 49.93 53.19C49.71 52.77 49.32 52.04 49.07 51.56C48.81 51.08 48.53 50.60 48.44 50.50C48.34 50.40 48.15 50.04 48.01 49.70C47.86 49.37 47.61 48.93 47.45 48.74C47.28 48.54 47.08 48.17 46.99 47.91C46.91 47.65 46.71 47.27 46.55 47.06C46.40 46.86 46.15 46.41 46.01 46.07C45.86 45.74 45.58 45.27 45.37 45.04C44.55 44.10 44.97 43.41 46.60 43.07C47.13 42.96 48.01 42.70 48.56 42.50C49.11 42.30 49.95 42.04 50.41 41.94C50.88 41.84 51.53 41.64 51.85 41.50C52.17 41.37 52.94 41.14 53.55 41.00C54.17 40.86 54.93 40.63 55.24 40.49C55.55 40.35 56.29 40.13 56.87 40.00C57.46 39.87 58.27 39.62 58.69 39.46C59.10 39.29 59.77 39.09 60.19 39.01C60.60 38.93 61.27 38.73 61.69 38.56C62.10 38.39 62.92 38.15 63.50 38.01C64.78 37.71 66.88 36.95 67.02 36.72C67.61 35.81 67.87 33.73 67.87 29.88C67.87 26.38 67.81 25.82 67.20 23.52C66.62 21.32 64.81 19.46 62.75 18.94C62.30 18.83 61.57 18.62 61.13 18.49C59.59 18.02 46.90 17.57 29.94 17.37C1.55 17.05 2.44 17.08 2.32 16.45C2.24 16.08 2.13 11.92 2.11 8.90C2.09 6.72 2.12 6.33 2.29 6.16C2.44 6.00 3.00 5.92 4.65 5.79C5.84 5.70 7.57 5.54 8.50 5.44C9.43 5.34 12.47 5.14 15.25 5.00C18.04 4.86 21.52 4.63 23.00 4.50C24.48 4.37 27.71 4.17 30.19 4.07C36.51 3.80 39.37 3.64 41.75 3.44C49.21 2.80 62.24 2.63 66.19 3.12C68.66 3.43 73.36 4.83 74.22 5.51C74.40 5.64 74.79 5.87 75.10 6.00C75.66 6.25 75.88 6.41 77.20 7.54C78.19 8.37 79.77 10.17 80.10 10.82C80.24 11.10 80.44 11.40 80.55 11.49C80.65 11.58 80.85 11.95 80.99 12.32C81.13 12.70 81.39 13.21 81.55 13.47C81.72 13.73 81.92 14.20 81.99 14.51C82.06 14.83 82.28 15.50 82.49 16.01C82.69 16.52 82.94 17.47 83.05 18.12C83.16 18.78 83.35 19.75 83.49 20.28C83.93 21.99 84.06 24.12 84.05 29.69C84.05 35.34 83.96 36.71 83.44 38.50C83.27 39.08 83.07 39.92 83.00 40.37C82.92 40.81 82.73 41.43 82.57 41.74C82.41 42.06 82.16 42.69 82.01 43.15C81.86 43.61 81.63 44.12 81.51 44.27C81.39 44.43 81.16 44.84 81.01 45.19C80.86 45.53 80.64 45.92 80.51 46.06C80.39 46.20 80.17 46.53 80.02 46.80C79.53 47.65 76.55 50.88 76.24 50.88C76.19 50.88 75.83 51.13 75.43 51.44C75.03 51.75 74.64 52.00 74.55 52.00C74.47 52.00 74.13 52.19 73.80 52.42C73.46 52.65 72.96 52.91 72.69 52.99C72.41 53.08 71.93 53.31 71.62 53.50C71.32 53.70 70.81 53.92 70.50 54.00C68.94 54.41 68.50 55.39 69.44 56.38C69.60 56.55 69.85 56.96 69.99 57.29C70.13 57.62 70.38 58.07 70.54 58.29C70.71 58.51 70.90 58.86 70.97 59.08C71.04 59.30 71.30 59.77 71.55 60.13C71.80 60.48 72.00 60.85 72.00 60.93C72.00 61.02 72.15 61.31 72.34 61.58C72.52 61.84 72.85 62.40 73.07 62.81C74.16 64.87 74.36 65.22 74.67 65.67C74.85 65.94 75.00 66.23 75.00 66.32C75.00 66.40 75.19 66.75 75.41 67.08C75.64 67.41 75.90 67.88 76.00 68.12C76.09 68.37 76.30 68.73 76.45 68.94C76.61 69.14 76.85 69.59 77.00 69.94C77.15 70.28 77.37 70.67 77.50 70.81C77.63 70.95 77.85 71.34 78.00 71.69C78.15 72.03 78.35 72.40 78.45 72.51C78.61 72.69 78.89 73.20 79.94 75.25C80.14 75.65 80.41 76.08 80.52 76.21C80.64 76.33 80.85 76.71 80.99 77.04C81.13 77.37 81.38 77.82 81.54 78.04C81.70 78.26 81.91 78.63 82.00 78.88C82.10 79.12 82.36 79.59 82.59 79.92C82.81 80.25 83.00 80.60 83.00 80.68C83.00 80.77 83.15 81.06 83.34 81.33C83.67 81.80 84.05 82.48 84.91 84.12C85.14 84.57 85.48 85.16 85.67 85.42C85.85 85.69 86.00 85.98 86.00 86.07C86.00 86.15 86.20 86.53 86.45 86.89C87.37 88.26 87.57 88.89 87.16 89.10C87.04 89.17 83.23 89.25 78.70 89.30L70.46 89.38L69.93 88.81Z" fill="#fff" fill-rule="evenodd"/><rect x="18" y="43.4" width="15.4" height="29" fill="#00b2ff"/></g></symbol>
+<symbol id="sA" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v4M15 3v4M7 7h10v4a5 5 0 0 1-10 0z"/><path d="M12 16v5" stroke-dasharray="2 2"/></g></symbol>
+<symbol id="sB" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v4M15 3v4M7 7h10v4a5 5 0 0 1-10 0z"/><path d="M12 16v5"/><path d="m16 19 2 2 4-4"/></g></symbol>
+<symbol id="sC" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+<symbol id="sE" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17v.5"/></g></symbol>
+<symbol id="iK" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></g></symbol>
+</defs></svg>
 
-  <section class="metricCard metricCard--stats">
-    <div class="metricCardArt" aria-hidden="true">
-      <div class="vehicleStage" id="vehicleStage">
-        <img src="/vehicle-top-art.svg" alt="">
-        <div class="chargeOverlay">
-          <div class="chargeAura"></div>
-          <div class="chargeBeam"></div>
-          <div class="chargePulse p1"></div>
-          <div class="chargePulse p2"></div>
-          <div class="chargePulse p3"></div>
-          <div class="chargeSpark">
-            <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M35.6 4 15 35.5h12.8L22.8 60 49 25.8H36.4z"/></svg>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="metricCardDate" id="dateLabel">-</div>
-    <div class="stationMeta">
-      <div class="stationMetaLine">
-        <div class="stationMetaLabel">Istasyon Adi</div>
-        <div class="stationMetaValue" id="stationNameLabel">Istasyon</div>
-      </div>
-      <div class="stationMetaLine">
-        <div class="stationMetaLabel">Uretilen Adres</div>
-        <div class="stationMetaValue muted" id="stationAddrLabel">-</div>
-      </div>
-    </div>
-    <div class="metricsGrid">
-      <div class="metricCell metricCell--power">
-        <div class="metricHead">
-          <svg viewBox="0 0 24 24"><path d="M13 2L6 13h4l-1 9 7-11h-4z"></path></svg>
-          <span>Aktar&#305;lan G&#252;&#231;</span>
-        </div>
-        <div class="metricValue"><span id="pwr">0.00</span> <span class="unit">kW</span></div>
-      </div>
-      <div class="metricCell">
-        <div class="metricHead">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l2.5 2.5"></path></svg>
-          <span>Ge&#231;en S&#252;re</span>
-        </div>
-        <div class="metricValue" id="tsec">0.00 <span class="unit">dk</span></div>
-      </div>
-      <div class="metricCell">
-        <div class="metricHead">
-          <svg viewBox="0 0 24 24"><path d="M12 3l1.7 4.4L18 9l-4.3 1.6L12 15l-1.7-4.4L6 9l4.3-1.6z"></path></svg>
-          <span>Aktar&#305;lan Enerji</span>
-        </div>
-        <div class="metricValue"><span id="ekwh">0.0</span> <span class="unit">kWh</span></div>
-      </div>
-      <div class="metricCell">
-        <div class="metricHead">
-          <svg viewBox="0 0 24 24"><path d="M4 13h4l2-6 4 12 2-6h4"></path></svg>
-          <span>Akim Limiti</span>
-        </div>
-        <div class="metricValue"><span id="limitMetric">32.0</span> <span class="unit">A</span></div>
-      </div>
-      <div class="metricCell">
-        <div class="metricHead">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><path d="M8.5 12h7"></path><path d="M12 8.5v7"></path><path d="M17.5 12h2"></path><path d="M4.5 12h2"></path></svg>
-          <span>Ak&#305;m</span>
-        </div>
-        <div class="metricValue"><span id="currentMetric">0.0</span> <span class="unit">A</span></div>
-      </div>
-    </div>
+<header><div class="ust">
+  <svg class="lg" role="img" aria-label="RTevCharge"><use href="#lg"/></svg>
+  <div class="ist"><b id="stationName">Şarj istasyonu</b><small id="stationAddr">-</small></div>
+  <span class="canli" id="sync" role="status">BEKLİYOR</span>
+</div></header>
+<div id="netStrip" role="status" aria-live="polite" hidden></div>
+
+<main>
+  <div class="alarm l1" id="alarmBand" role="alert" hidden><svg class="i"><use href="#sE"/></svg><span id="alarmTxt"></span></div>
+
+  <section class="kart durum" id="stateCard" data-s="A" aria-live="polite">
+    <!-- Arac gorseli: /togg-arac-v2.webp (firmware icinde PROGMEM). Sahne PWA 1.1.5 ile ayni: direk sagda, ince kablo + akan isik, sarjda yesil direk. -->
+    <svg class="arac" id="aracSvg" viewBox="0 0 320 122" role="img" aria-label="Araç görseli: araç bağlı değil"><defs><filter id="yF" color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values="0 0 0 0 .25  0 0 0 0 1  0 0 0 0 .55  0 0 0 1 0"/></filter><linearGradient id="sG" x1="0" x2="1"><stop offset="0" stop-color="#000"/><stop offset=".5" stop-color="#fff"/><stop offset="1" stop-color="#000"/></linearGradient><filter id="yB" color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values="0 0 0 0 0  0 0 0 0 .7  0 0 0 0 1  0 0 0 1 0"/></filter><filter id="yR" color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values="0 0 0 0 1  0 0 0 0 .22  0 0 0 0 .2  0 0 0 1 0"/></filter><mask id="sS" maskUnits="userSpaceOnUse" x="-10" y="-10" width="340" height="130"><rect x="2" y="-10" width="218" height="130" fill="url(#sG)"/></mask><mask id="sM" maskUnits="userSpaceOnUse" x="-10" y="-10" width="340" height="130"><rect class="swp" x="90" y="-10" width="90" height="130" fill="url(#sG)"/></mask></defs>
+      <ellipse class="parilti" cx="112" cy="106" rx="104" ry="6"/>
+      <path class="zemin" d="M4 105h312"/>
+      <rect class="post" x="286" y="26" width="24" height="79" rx="4"/><rect class="ekr" x="291" y="32" width="14" height="9" rx="1.5"/><rect class="tepe" x="286" y="22" width="24" height="5" rx="2"/>
+      <path class="kab kA" d="M286 62c-5 24 -10 32 -18 32"/><rect class="kA fis" x="262" y="91" width="9" height="7" rx="2"/>
+      <g id="aracGorsel"><image href="/togg-arac-v2.webp" x="2" y="19.3" width="218" height="88.7" preserveAspectRatio="xMidYMax meet"/><circle class="port" cx="168.2" cy="67.5" r="3.5"/></g>
+      <g class="sw" mask="url(#sM)"><image filter="url(#yF)" href="/togg-arac-v2.webp" x="2" y="19.3" width="218" height="88.7" preserveAspectRatio="xMidYMax meet"/></g>
+      <g class="swB" mask="url(#sS)"><image filter="url(#yB)" href="/togg-arac-v2.webp" x="2" y="19.3" width="218" height="88.7" preserveAspectRatio="xMidYMax meet"/></g>
+      <g class="swR" mask="url(#sS)"><image filter="url(#yR)" href="/togg-arac-v2.webp" x="2" y="19.3" width="218" height="88.7" preserveAspectRatio="xMidYMax meet"/></g>
+      <path class="kab kB" d="M168.2 69.5C178 70 190 86 190 104C190 112 250 114 286 62"/>
+      <path class="akim" pathLength="100" d="M168.2 69.5C178 70 190 86 190 104C190 112 250 114 286 62"/>
+      <g class="batt" transform="translate(-270 0)"><rect x="276" y="6" width="30" height="15" rx="3"/><rect x="306" y="10" width="3" height="7" rx="1" class="bc"/><rect class="bdol" x="279" y="9" width="24" height="9" rx="1.5"/></g>
+      <g class="uyar" transform="translate(-270 0)"><path d="M292 4l14 24h-28z"/><path d="M292 12v8M292 23v1" class="un"/></g>
+    </svg>
+    <div class="dIk" aria-hidden="true"><svg><use id="stateIcon" href="#sA"/></svg></div>
+    <div><p class="dT" id="stateTitle">Araç bağlı değil</p><p class="dA" id="stateHint">Şarj kablosunu aracınıza takın.</p><p class="dA" id="schedLine" hidden></p></div>
   </section>
 
-  <button class="installBtn" id="installBtn">Uygulamaya Ekle</button>
-</div>
-</div>
+  <section class="kart" id="liveCard" hidden>
+    <h2>Anlık güç<span class="s" id="phaseInfo">3 faz</span></h2>
+    <div class="guc"><span id="pwr">0,0</span><u>kW</u></div>
+    <div class="kvs">
+      <div class="kv"><small>Enerji</small><b id="ekwh">0,00</b><u>kWh</u></div>
+      <div class="kv"><small>Süre</small><b id="tsec">0 dk</b></div>
+    </div>
+    <div class="ph" id="ph1"><span>L1</span><div class="mt"><i id="b1"></i></div><b id="i1">0,0 A</b></div>
+    <div class="ph" id="ph2"><span>L2</span><div class="mt"><i id="b2"></i></div><b id="i2">0,0 A</b></div>
+    <div class="ph" id="ph3"><span>L3</span><div class="mt"><i id="b3"></i></div><b id="i3">0,0 A</b></div>
+    <p class="lim">Akım limiti: <b id="limitA">32</b> A</p>
+  </section>
+
+  <section class="kart qr" id="qrCard">
+    <svg class="q" viewBox="0 0 96 96" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"><path d="M6 26V6h20M70 6h20v20M90 70v20H70M26 90H6V70"/></g><g fill="currentColor" opacity=".8"><rect x="24" y="24" width="18" height="18" rx="2"/><rect x="54" y="24" width="18" height="18" rx="2"/><rect x="24" y="54" width="18" height="18" rx="2"/><rect x="56" y="56" width="6" height="6"/><rect x="66" y="56" width="6" height="6"/><rect x="56" y="66" width="6" height="6"/><rect x="66" y="66" width="6" height="6"/></g></svg>
+    <div><p id="qrText">Şarjı başlatmak için RTevCharge uygulamasından istasyondaki QR kodu okutun.</p>
+    <a class="dugme" id="appBtn" href="#" data-todo="uygulama-baglantisi">Uygulamayı aç</a></div>
+  </section>
+
+  <section class="kart">
+    <h2 id="sessTitle">Bu seans</h2>
+    <dl>
+      <dt>Süre</dt><dd id="sTime">—</dd>
+      <dt>Enerji</dt><dd id="sKwh">—</dd>
+      <dt>Tahmini maliyet</dt><dd id="sCost">—</dd>
+    </dl>
+  </section>
+
+  <section class="kart">
+    <h2>Son seanslar</h2>
+    <p class="bos"><svg class="i" aria-hidden="true"><use href="#iK"/></svg>Geçmiş seanslarınız, uygulamada giriş yaptığınızda burada görünecek.</p>
+  </section>
+
+  <footer>
+    <button class="ik" id="installBtn" hidden>Ana ekrana ekle</button>
+    <span id="ts">Son güncelleme: -</span>
+    <a href="/admin">Yönetici girişi</a>
+  </footer>
+</main>
+
 <script>
-let deferredPrompt=null;
-const POLL_MS=2000;
-const MAX_POINTS=40;
-let livePoints=[];
-let chartCeil=32;
-let currentChargeModeId=0;
-const vehicleStage=document.getElementById("vehicleStage");
-const stateMeta={
-  A:{name:"Hazır",hint:"Araç bekleniyor"},
-  B:{name:"Bağlı",hint:"Araç bağlandı"},
-  C:{name:"Şarj Ediliyor",hint:"Enerji aktarımı sürüyor"},
-  D:{name:"Havalandırma",hint:"Şarj sürüyor"},
-  E:{name:"Şarj Hatası",hint:"Pilot hata durumu"},
-  F:{name:"Kritik Hata",hint:"Koruma aktif"}
+const POLL_MS=3000;
+const ST={
+  A:{t:"Araç bağlı değil",h:"Şarj kablosunu aracınıza takın.",i:"sA"},
+  B:{t:"Araç bağlı, hazır",h:"Şarjı başlatmak için uygulamadan QR kodu okutun.",i:"sB"},
+  C:{t:"Şarj oluyor",h:"Enerji aracınıza aktarılıyor.",i:"sC"},
+  D:{t:"Şarj oluyor",h:"Havalandırmalı şarj modu.",i:"sC"},
+  E:{t:"Bağlantı hatası",h:"Araçla iletişim kurulamadı. Kabloyu çıkarıp yeniden takın.",i:"sE"},
+  F:{t:"İstasyon hatası",h:"Koruma devrede. Sorun sürerse yetkiliye başvurun.",i:"sE"}
 };
-const gaugeRing=document.getElementById("gaugeValue");
-const gaugeCirc=gaugeRing?(2*Math.PI*gaugeRing.r.baseVal.value):0;
-if(gaugeRing){
-  gaugeRing.style.strokeDasharray=gaugeCirc.toFixed(1);
-  gaugeRing.style.strokeDashoffset=gaugeCirc.toFixed(1);
-}
-const carEls={
-  chargeBar:document.getElementById("chargeBar"),
-  chargeBarInner:document.getElementById("chargeBarInner")
-};
-function escapeHtml(value){
-  return String(value||"").replace(/[&<>"']/g,(ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
-}
-function fmtTime(sec){
-  const totalSec=Math.max(0,Number(sec)||0);
-  const mins=totalSec/60;
-  return mins.toFixed(2)+" dk";
-}
-function clamp(v,min,max){return Math.max(min,Math.min(max,v))}
-function setText(id,value){
-  const el=document.getElementById(id);
-  if(el) el.textContent=value;
-}
-function chargeCmd(mode){fetch('/charge_cmd?m='+mode).then(()=>pull()).catch(()=>{});}
-function updateChargeAction(modeId){
-  currentChargeModeId=modeId;
-}
-function toggleChargeAction(){
-  chargeCmd(currentChargeModeId===2?0:2);
-}
-function setSync(ok){
-  const el=document.getElementById("sync");
-  if(!el) return;
-  el.textContent=ok?"LIVE":"WAIT";
-  el.className=ok?"sync live":"sync";
-}
-function setChargingVisual(state,powerKw,currentA){
-  if(!vehicleStage) return;
-  const waiting=state==="A";
-  const charging=(state==="C"||state==="D");
-  const active=waiting || charging;
-  vehicleStage.classList.toggle("is-charging",active);
-  const intensity=waiting
-    ? .34
-    : charging
-      ? clamp(Math.max((Number(powerKw)||0)/11,(Number(currentA)||0)/32,.28),.28,1)
-      : .16;
-  const speed=(waiting?2.85:(2.9-(intensity*1.35))).toFixed(2)+"s";
-  vehicleStage.style.setProperty("--chargeOpacity",intensity.toFixed(2));
-  vehicleStage.style.setProperty("--chargeSpeed",speed);
-}
-function setGauge(loadPct){
-  const pct=clamp(loadPct,0,100);
-  if(gaugeRing){
-    gaugeRing.style.strokeDashoffset=(gaugeCirc*(1-pct/100)).toFixed(1);
+const $=id=>document.getElementById(id);
+function setText(id,v){const e=$(id);if(e&&e.textContent!==v)e.textContent=v;}
+function nf(v,d){return (Number(v)||0).toLocaleString("tr-TR",{minimumFractionDigits:d,maximumFractionDigits:d});}
+function fmtDur(s){s=Math.max(0,Math.floor(Number(s)||0));const h=Math.floor(s/3600),m=Math.floor(s%3600/60);
+  return h?h+" sa "+String(m).padStart(2,"0")+" dk":(m?m+" dk "+String(s%60).padStart(2,"0")+" sn":s+" sn");}
+let fails=0,lastState="",timer=0,busy=false;
+
+function render(d){
+  const st=ST[d.state]?d.state:"A",m=ST[st];
+  const charging=st==="C"||st==="D";
+  if(st!==lastState){
+    lastState=st;
+    $("stateCard").dataset.s=st;
+    $("stateIcon").setAttribute("href","#"+m.i);
+    setText("stateTitle",m.t);setText("stateHint",m.h);
+    $("aracSvg").setAttribute("aria-label","Araç görseli: "+m.t.toLocaleLowerCase("tr-TR"));
   }
-  setText("gaugePct",pct.toFixed(0)+"%");
-  setText("loadPct",pct.toFixed(0)+"%");
-  setText("loadPctCard",pct.toFixed(0)+"%");
+  setText("stationName",d.stationName||"Şarj istasyonu");
+  setText("stationAddr",d.stationAddr||"-");
+  // planli sarj (puant): yasakli aralikta kisa bilgi satiri
+  const sb=!!Number(d.schedBlocked),sl=$("schedLine");
+  sl.hidden=!sb;
+  if(sb)setText("schedLine",d.schedUntil?"Puant saatleri: şarj "+d.schedUntil+" saatinde otomatik başlayacak.":"Puant saatleri: şarj bu aralıkta bekletiliyor.");
+  // alarm
+  const lv=Number(d.alarmLv)||0,ab=$("alarmBand");
+  ab.hidden=lv<1;
+  if(lv>0){ab.className="alarm l"+(lv>1?2:1);setText("alarmTxt",d.alarmTxt||"Uyarı");}
+  // canli kart
+  const ph=Math.min(3,Math.max(1,Number(d.phase)||1));
+  const lim=Math.max(6,Number(d.limitTargetA??d.limitA)||32);
+  const live=!!d.sLive;
+  const kwh=live&&d.sLiveKWh!==undefined?d.sLiveKWh:d.eKWh;
+  const sec=live&&d.sLiveSec!==undefined?d.sLiveSec:d.tSec;
+  $("liveCard").hidden=!charging;
+  if(charging){
+    setText("pwr",nf((Number(d.pW)||0)/1000,1));
+    setText("ekwh",nf(kwh,2));
+    setText("tsec",fmtDur(sec));
+    setText("phaseInfo",ph+" faz");
+    [d.ia,d.ib,d.ic].forEach((a,k)=>{
+      $("ph"+(k+1)).hidden=k>=ph;
+      a=Number(a)||0;
+      setText("i"+(k+1),nf(a,1)+" A");
+      $("b"+(k+1)).style.width=Math.min(100,a/lim*100).toFixed(0)+"%";
+    });
+    setText("limitA",nf(lim,0));
+  }
+  // QR metni duruma gore
+  setText("qrText",charging?"Şarjı durdurmak veya takip etmek için RTevCharge uygulamasını kullanın.":"Şarjı başlatmak için RTevCharge uygulamasından istasyondaki QR kodu okutun.");
+  // seans ozeti
+  const has=live||(Number(sec)||0)>0;
+  setText("sessTitle",live?"Bu seans":"Son seans");
+  setText("sTime",has?fmtDur(sec):"—");
+  setText("sKwh",has?nf(kwh,2)+" kWh":"—");
+  setText("sCost","—"); // tarife bilgisi henuz yok
+  setText("ts","Son güncelleme: "+new Date().toLocaleTimeString("tr-TR"));
 }
-function pushLivePoint(value){
-  livePoints.push(clamp(value,0,999));
-  if(livePoints.length>MAX_POINTS) livePoints.shift();
-  renderLiveChart();
+
+function setNet(ok){
+  const s=$("sync"),n=$("netStrip");
+  s.className="canli"+(ok?" on":"");
+  setText("sync",ok?"CANLI":"BAĞLANTI YOK");
+  if(ok){n.hidden=true;return;}
+  n.hidden=false;
+  n.className=fails<3?"uyari":"kotu";
+  setText("netStrip",fails<3?"Bağlantı zayıf, yeniden bağlanıyor…":"İstasyona bağlantı koptu. Yeniden deneniyor…");
 }
-function renderLiveChart(){
-  const line=document.getElementById("chartLine");
-  const area=document.getElementById("chartArea");
-  const dot=document.getElementById("chartDot");
-  if(!line||!area||!dot) return;
-  const values=livePoints.length?livePoints:[0];
-  const w=320,h=160,padX=12,padY=14;
-  const maxVal=Math.max(chartCeil,6,...values);
-  const step=values.length>1?((w-(padX*2))/(values.length-1)):0;
-  const coords=values.map((v,i)=>{
-    const x=padX+(step*i);
-    const y=h-padY-((v/maxVal)*(h-(padY*2)));
-    return [x,y];
-  });
-  const points=coords.map(([x,y])=>x.toFixed(1)+","+y.toFixed(1)).join(" ");
-  line.setAttribute("points",points||("12,"+(h-padY)));
-  const last=coords[coords.length-1]||[w-padX,h-padY];
-  const areaPath="M "+padX+" "+(h-padY)+" L "+coords.map(([x,y])=>x.toFixed(1)+" "+y.toFixed(1)).join(" L ")+" L "+last[0].toFixed(1)+" "+(h-padY)+" Z";
-  area.setAttribute("d",areaPath);
-  dot.setAttribute("cx",last[0].toFixed(1));
-  dot.setAttribute("cy",last[1].toFixed(1));
-  const peak=Math.max(...values);
-  const avg=values.reduce((sum,v)=>sum+v,0)/values.length;
-  const windowSec=Math.max(0,Math.round(((values.length-1)*POLL_MS)/1000));
-  setText("chartPeak",peak.toFixed(1)+" A");
-  setText("chartAvg",avg.toFixed(1)+" A");
-  setText("chartWindow",windowSec+" sn");
-  setText("chartNow",values[values.length-1].toFixed(1)+" A");
-}
-function updateState(st){
-  document.body.className="state-"+st;
-  setText("state","STATE:"+st);
-  const meta=stateMeta[st]||stateMeta["A"];
-  setText("stateName",meta.name);
-  setText("stateHint",meta.hint);
-  setText("statusCode","Durum "+st);
-}
-function renderAlarm(level,text,state,staOk){
-  const box=document.getElementById("alarmBox");
-  if(box) box.className="footerStatus";
-  const orb=document.getElementById("statusOrb");
-  if(orb) orb.className="statusOrb"+(level===2?" err":(level===1?" warn":""));
-  setText("alarmText",text||"Sistem normal");
-  setText("alarmMeta","Durum kodu "+state+" | "+(staOk?"Wi-Fi bağlı":"Wi-Fi yok"));
-}
-function updateDateLabel(){
-  setText('dateLabel',new Date().toLocaleString('tr-TR',{day:'numeric',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'}));
-}
+
 function pull(){
-  fetch('/status',{cache:'no-store'}).then(r=>r.json()).then(d=>{
-    const ia=Number(d.ia)||0, ib=Number(d.ib)||0, ic=Number(d.ic)||0;
-    const it=ia+ib+ic;
-    const phaseCount=Math.max(1,Number(d.phase)||1);
-    const limitA=Math.max(6,Number(d.limitTargetA ?? d.limitA)||32);
-    const totalLimit=phaseCount*limitA;
-    const loadPct=clamp((it/totalLimit)*100,0,100);
-    const powerKw=((Number(d.pW)||0)/1000.0);
-    const liveSession=!!d.sLive;
-    const energy=(liveSession&&d.sLiveKWh!==undefined)?(Number(d.sLiveKWh)||0):(Number(d.eKWh)||0);
-    const timeSec=(liveSession&&d.sLiveSec!==undefined)?(Number(d.sLiveSec)||0):(Number(d.tSec)||0);
-    const activePhases=Math.max(1,[ia,ib,ic].filter(v=>v>0.5).length||phaseCount);
-    const displayCurrent=activePhases>1 ? (it/activePhases) : it;
-    chartCeil=Math.max(6,totalLimit);
-    setText('it',displayCurrent.toFixed(1));
-    setText('currentMetric',displayCurrent.toFixed(1));
-    setText('i1',ia.toFixed(1)+" A");
-    setText('i2',ib.toFixed(1)+" A");
-    setText('i3',ic.toFixed(1)+" A");
-    setText('pwr',powerKw.toFixed(2));
-    setText('ekwh',energy.toFixed(1));
-    setText('tsec',fmtTime(timeSec));
-    setText('stationNameLabel',d.stationName||'Istasyon');
-    setText('stationAddrLabel',d.stationAddr||'-');
-    setText('energyMeta',liveSession?"Aktif seans":"Son okuma");
-    setText('timeMeta',phaseCount+" faz");
-    setText('limitA',limitA.toFixed(1));
-    setText('limitMetric',limitA.toFixed(1));
-    setText('limitMeta',phaseCount+" faz / "+limitA.toFixed(1)+" A limit");
-    setText('phaseSummary',phaseCount+" faz • "+loadPct.toFixed(0)+"% doluluk");
-    setText('gaugeLabel',phaseCount+" faz / "+limitA.toFixed(1)+" A");
-    updateChargeAction(Number(d.modeId)||0);
-    if(d.rLbl!==undefined) setText('relay',"R:"+d.rLbl);
-    if(d.state!==undefined) updateState(d.state);
-    setChargingVisual(String(d.state||"A"),powerKw,displayCurrent);
-    if(d.ip!==undefined) setText('ip',d.ip);
-    if(d.host!==undefined) setText('host',d.host);
-    setGauge(loadPct);
-    setText('ts',"Son güncelleme: "+new Date().toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit",second:"2-digit"}));
-    renderAlarm(d.alarmLv||0, d.alarmTxt||"Sistem normal", d.state||"A", !!d.staOk);
-    pushLivePoint(displayCurrent);
-    updateDateLabel();
-    setSync(true);
-  }).catch(()=>{ setSync(false); updateDateLabel(); });
+  clearTimeout(timer);
+  if(busy)return;busy=true;
+  const ac=new AbortController(),to=setTimeout(()=>ac.abort(),2500);
+  fetch("/status_public",{cache:"no-store",signal:ac.signal})
+    .then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
+    .then(d=>{fails=0;setNet(true);render(d);})
+    .catch(()=>{fails++;setNet(false);})
+    .finally(()=>{clearTimeout(to);busy=false;clearTimeout(timer);if(!document.hidden)timer=setTimeout(pull,POLL_MS);});
 }
-window.addEventListener("beforeinstallprompt",(e)=>{
-  e.preventDefault();
-  deferredPrompt=e;
-  const b=document.getElementById("installBtn");
-  if(b) b.style.display="block";
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)pull();});
+
+// PWA: kurulum + service worker (mevcut davranis korunur)
+let deferredPrompt=null;
+window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();deferredPrompt=e;$("installBtn").hidden=false;});
+$("installBtn").addEventListener("click",()=>{
+  if(!deferredPrompt)return;
+  deferredPrompt.prompt();
+  deferredPrompt.userChoice.finally(()=>{deferredPrompt=null;$("installBtn").hidden=true;});
 });
-document.addEventListener("click",(e)=>{
-  const btn=(e.target&&e.target.closest)?e.target.closest("#installBtn"):null;
-  if(btn && deferredPrompt){
-    deferredPrompt.prompt();
-    deferredPrompt.userChoice.finally(()=>{deferredPrompt=null;btn.style.display="none";});
-  }
-});
-if("serviceWorker" in navigator){
-  window.addEventListener("load",function(){
-    navigator.serviceWorker.register("/sw.js").catch(()=>{});
-  });
-}
-renderLiveChart();
-updateDateLabel();
-setInterval(pull,POLL_MS);
-setInterval(updateDateLabel,30000);
+if("serviceWorker" in navigator){window.addEventListener("load",()=>navigator.serviceWorker.register("/sw.js").catch(()=>{}));}
+// Uygulama baglantisi henuz yok (TODO: universal link / app link)
+$("appBtn").addEventListener("click",e=>{if($("appBtn").getAttribute("href")==="#")e.preventDefault();});
 pull();
 </script>
 </body></html>
-
 )HTML";
 
 static const char MANIFEST_JSON[] PROGMEM = R"JSON(
 {
-  "name": "RotosisEVSE",
-  "short_name": "RotosisEVSE",
+  "name": "RTevCharge",
+  "short_name": "RTevCharge",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#07131f",
-  "theme_color": "#0a1d2f",
+  "theme_color": "#0c425e",
   "icons": [
     {
       "src": "/app-icon.svg",
@@ -1189,8 +1091,8 @@ static const char MANIFEST_JSON[] PROGMEM = R"JSON(
 )JSON";
 
 static const char SERVICE_WORKER_JS[] PROGMEM = R"JS(
-const CACHE_NAME = "evse-pwa-v7";
-const ASSETS = ["/", "/manifest.json", "/app-icon.svg", "/vehicle-top-art.svg"];
+const CACHE_NAME = "evse-pwa-v10";
+const ASSETS = ["/", "/manifest.json", "/app-icon.svg", "/vehicle-top-art.svg", "/togg-arac-v2.webp"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -1213,22 +1115,9 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   const path = url.pathname;
-  const isLiveApi =
-    path === "/status" ||
-    path === "/history" ||
-    path === "/data_reset" ||
-    path === "/charge_cmd" ||
-    path === "/calib_apply" ||
-    path.startsWith("/relay") ||
-    path === "/pulse_reset" ||
-    path === "/pulse_set";
-
-  if (isLiveApi) {
-    event.respondWith(
-      fetch(event.request).catch(() =>
-        new Response("{}", { headers: { "Content-Type": "application/json" } })
-      )
-    );
+  // Yalnizca kullanici ekrani ve statik dosyalar onbellege alinir. Yonetim
+  // sayfalari, yetkili API yanitlari ve POST istekleri hic onbellege girmez.
+  if (event.request.method !== "GET" || url.origin !== self.location.origin || ASSETS.indexOf(path) < 0) {
     return;
   }
 
@@ -1264,569 +1153,592 @@ static const char APP_ICON_SVG[] PROGMEM = R"SVG(
 )SVG";
 
 static const char MAIN_HTML[] PROGMEM = R"HTML(
-<!DOCTYPE html><html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RotosisEVSE Settings</title>
+<!DOCTYPE html><html lang="tr"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0c425e">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RTevCharge Yönetim"><meta name="format-detection" content="telephone=no">
+<title>RTevCharge · Yönetim</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='12' fill='%230c425e'/><path d='M14 44V20h14a8 8 0 0 1 0 16h-6l10 8' fill='none' stroke='%23fff' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/><circle cx='46' cy='22' r='6' fill='%23ff5a1f'/><circle cx='46' cy='42' r='6' fill='%2300b2ff'/></svg>">
 <style>
-body{font-family:Arial;margin:0;background:#09111d;color:#e8eefc}
-.wrap{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:12px;padding:12px}
-@media(max-width:960px){.wrap{grid-template-columns:1fr}}
-.card{background:#111a2b;border:1px solid #20304a;border-radius:14px;padding:12px}
-.navCard{grid-column:1/-1}
-h2{margin:0 0 10px 0;font-size:14px;color:#b7c5e6}
-.kv{display:grid;grid-template-columns:150px 1fr;gap:8px;margin:6px 0}
-@media(max-width:560px){.kv{grid-template-columns:1fr}}
-.k{color:#b7c5e6;font-size:12px}
-.v{font-weight:700}
-.mono{font-family:monospace;color:#00ffaa}
-input,select,textarea{width:100%;padding:8px;border-radius:10px;border:1px solid #20304a;background:#0c1424;color:#e8eefc;box-sizing:border-box}
-textarea{min-height:180px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,"Courier New",monospace;line-height:1.45}
-.btns{display:flex;flex-wrap:wrap;gap:8px}
-button{padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#0c1424;color:#e8eefc;cursor:pointer}
-.primary{background:rgba(0,200,150,.18);border-color:rgba(0,200,150,.45)}
-.danger{background:rgba(255,77,77,.14);border-color:rgba(255,77,77,.40)}
-.small{font-size:11px;color:#b7c5e6;line-height:1.5}
-.sep{height:1px;background:#20304a;margin:12px 0}
-.hero{background:linear-gradient(180deg,rgba(0,200,150,.10),rgba(0,0,0,0));border:1px solid #20304a;border-radius:12px;padding:10px;margin-bottom:10px}
-.heroTop{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
-.badge{font-family:monospace;font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid rgba(0,200,150,.45);background:rgba(0,200,150,.12);color:#00ffaa}
-.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-@media(max-width:680px){.grid3,.grid2{grid-template-columns:1fr}}
-.hintBox{padding:10px 12px;border-radius:12px;background:rgba(0,200,150,.08);border:1px solid rgba(0,200,150,.18);color:#bde9dd;font-size:12px;line-height:1.55}
-.pageSection{display:block}
-.navRow{display:flex;flex-wrap:wrap;gap:8px}
-.navBtn{display:inline-flex;align-items:center;justify-content:center;padding:8px 10px;border-radius:10px;border:1px solid #20304a;background:#0c1424;color:#e8eefc;text-decoration:none}
-.navBtn.active{background:rgba(0,200,150,.18);border-color:rgba(0,200,150,.45)}
+:root{--lacivert:#0c425e;--turuncu:#ff5a1f;--mavi:#00b2ff;--zemin:#f3f6f8;--yuzey:#fff;--kenar:#d5dee5;--metin:#14212b;--soluk:#4d5f6d;--iyi:#11703f;--iyi-z:#e2f5ea;--kotu:#b3261e;--kotu-z:#fbe6e4;--uyari:#8a5a00;--uyari-z:#fff3d6;--dugme:#0c425e;--dugme-metin:#fff;--odak:#ff5a1f;--kod:#f0f3f6;--vurgu:#0c425e;--tab:64px;--st:env(safe-area-inset-top);--sb:env(safe-area-inset-bottom);--sl:env(safe-area-inset-left);--sr:env(safe-area-inset-right)}
+@media(prefers-color-scheme:dark){:root{--zemin:#0b1a24;--yuzey:#11283a;--kenar:#24435a;--metin:#e7eef3;--soluk:#a9bccb;--iyi:#5fd896;--iyi-z:#123526;--kotu:#ff8a80;--kotu-z:#3a1a1a;--uyari:#ffc760;--uyari-z:#3a2c0e;--dugme:#00b2ff;--dugme-metin:#06141d;--kod:#0a1720;--vurgu:#00b2ff}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{-webkit-text-size-adjust:100%;font-size:16px}
+@supports(font:-apple-system-body){html{font:-apple-system-body}}
+body{margin:0;background:var(--zemin);color:var(--metin);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:.94rem;line-height:1.5;overscroll-behavior-y:none}
+[hidden]{display:none!important}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--odak);outline-offset:2px}
+button,a.nav,.seg button{touch-action:manipulation;user-select:none;-webkit-user-select:none}
+button{font:inherit;font-weight:600;cursor:pointer;min-height:44px;border-radius:8px;padding:8px 16px;border:1px solid transparent;background:var(--dugme);color:var(--dugme-metin)}
+button.ik{background:transparent;color:var(--metin);border-color:var(--kenar)}
+button.th{background:transparent;color:var(--kotu);border-color:var(--kotu)}
+button.thd{background:var(--kotu);color:#fff}
+@media(prefers-color-scheme:dark){button.thd{color:#1a0505}}
+button.iy{background:var(--iyi);color:#fff}
+button:disabled{opacity:.5;cursor:not-allowed}
+input,select{font:inherit;font-size:max(16px,1rem);width:100%;min-height:44px;padding:9px 11px;border:1px solid var(--kenar);border-radius:8px;background:var(--zemin);color:var(--metin)}
+input[type=checkbox]{width:22px;min-height:22px;height:22px;accent-color:var(--vurgu);vertical-align:middle;margin:0 8px 0 0}
+label{display:block;font-weight:600;font-size:.85rem;margin:0 0 4px;color:var(--soluk)}
+label.ck{display:flex;align-items:center;min-height:44px;color:var(--metin);font-weight:500}
+.schR{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}.schR input[type=time]{width:auto;min-width:110px}.schR .gun{display:flex;flex-wrap:wrap;gap:8px}.schR .gun label{display:flex;gap:3px;align-items:center;font-size:13px}
+.mono,.v{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}
+.lg{width:34px;height:34px;flex:none}
+.marka{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.04em}
+.marka small{display:block;font-weight:400;letter-spacing:0;opacity:.85;font-size:.75rem}
+/* giris */
+.giris-kap{min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:calc(16px + var(--st)) calc(16px + var(--sr)) calc(16px + var(--sb)) calc(16px + var(--sl))}
+.giris{width:100%;max-width:380px;background:var(--yuzey);border:1px solid var(--kenar);border-top:4px solid var(--turuncu);border-radius:14px;padding:24px}
+.giris h1{font-size:1.3rem;margin:16px 0 12px}
+.giris .alan{margin-top:12px}
+.pw{display:flex;gap:6px}.pw input{flex:1}.pw button{flex:none;min-width:72px}
+.giris button[type=submit]{width:100%;margin-top:16px}
+.mesaj{margin-top:12px;padding:10px 12px;border-radius:8px;font-size:.88rem}
+.mesaj.kotu{background:var(--kotu-z);color:var(--kotu)}.mesaj.iyi{background:var(--iyi-z);color:var(--iyi)}.mesaj.uyari{background:var(--uyari-z);color:var(--uyari)}
+/* ust bar */
+header.ust{position:sticky;top:0;z-index:15;background:var(--lacivert);color:#fff;border-bottom:3px solid var(--turuncu);padding:var(--st) var(--sr) 0 var(--sl)}
+.ust-ic{display:flex;align-items:center;gap:10px;padding:8px 12px;min-height:56px}
+.ust .marka span{display:none}
+.ist{flex:1;min-width:0;line-height:1.25;user-select:text;-webkit-user-select:text}
+.ist b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:1rem}
+.ist small{font:.78rem ui-monospace,Consolas,monospace;opacity:.85}
+.ust button{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.55);padding:6px 12px}
+.ust button.ic{width:44px;padding:0;font-size:1.3rem}
+.spin{animation:sp .8s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
+#netStrip{padding:8px calc(12px + var(--sr)) 8px calc(12px + var(--sl));font-size:.85rem;font-weight:600;text-align:center}
+#netStrip.kotu{background:var(--kotu-z);color:var(--kotu)}#netStrip.iyi{background:var(--iyi-z);color:var(--iyi)}#netStrip.uyari{background:var(--uyari-z);color:var(--uyari)}
+/* gezinme: mobilde alt sekme, genis ekranda yan menu */
+#navCard{position:fixed;left:0;right:0;bottom:0;z-index:14;display:flex;background:var(--yuzey);border-top:1px solid var(--kenar);padding:0 var(--sr) var(--sb) var(--sl)}
+a.nav{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:var(--tab);text-decoration:none;color:var(--soluk);font-size:.7rem;font-weight:600;border-top:3px solid transparent}
+a.nav svg{width:24px;height:24px}
+a.nav.active{color:var(--vurgu);border-top-color:var(--turuncu)}
+a.nav.yan{display:none}
+main{padding:16px calc(12px + var(--sr)) calc(var(--tab) + var(--sb) + 24px) calc(12px + var(--sl));max-width:1240px}
+@media(min-width:900px){
+.ust .marka span{display:block}
+.ust-ic{padding:8px 20px}
+.app{display:grid;grid-template-columns:220px 1fr}
+#navCard{position:sticky;top:calc(59px + var(--st));align-self:start;height:calc(100vh - 59px - var(--st));flex-direction:column;border-top:0;border-right:1px solid var(--kenar);padding:12px 8px;gap:2px}
+a.nav{flex:none;flex-direction:row;justify-content:flex-start;gap:12px;padding:0 14px;min-height:46px;font-size:.92rem;border-top:0;border-left:3px solid transparent;border-radius:0 8px 8px 0}
+a.nav.active{border-left-color:var(--turuncu);background:var(--kod)}
+a.nav.yan{display:flex}
+main{padding:20px 24px 40px}}
+@media(hover:hover){a.nav:hover{background:var(--kod)}button:hover{filter:brightness(1.08)}}
+/* icerik */
+.sec{display:none}.sec.on{display:block}
+.bas{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 14px}
+.bas h1{font-size:1.35rem;margin:0;flex:1}
+.izgara{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))}
+.genis{grid-column:1/-1}
+.kart{background:var(--yuzey);border:1px solid var(--kenar);border-radius:12px;padding:16px;min-width:0}
+.kart h2{margin:0 0 10px;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--soluk);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.kart h2 .s{margin-left:auto}
+.rozet{display:inline-block;padding:2px 10px;border-radius:999px;font-size:.78rem;font-weight:700;background:var(--kod);color:var(--soluk);letter-spacing:0;text-transform:none}
+.rozet.iyi{background:var(--iyi-z);color:var(--iyi)}.rozet.kotu{background:var(--kotu-z);color:var(--kotu)}.rozet.uyari{background:var(--uyari-z);color:var(--uyari)}
+.hero{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+.st{display:flex;align-items:center;gap:14px;flex:1;min-width:230px}
+.stL{width:60px;height:60px;border-radius:12px;display:grid;place-items:center;font-size:2rem;font-weight:800;background:var(--kod);color:var(--soluk);flex:none}
+.stL.C,.stL.D{background:var(--iyi-z);color:var(--iyi)}.stL.B{background:var(--kod);color:var(--vurgu);box-shadow:inset 0 0 0 2px var(--mavi)}.stL.E,.stL.F{background:var(--kotu-z);color:var(--kotu)}
+.stT{font-size:1.15rem;font-weight:700}.stS{color:var(--soluk);font-size:.82rem}
+.seg{display:flex;width:100%;max-width:420px;background:var(--kod);border:1px solid var(--kenar);border-radius:10px;padding:3px;gap:3px}
+.seg button{flex:1;background:transparent;color:var(--soluk);padding:6px 8px;font-size:.85rem}
+.seg button.on{background:var(--dugme);color:var(--dugme-metin)}.seg button.on.dur{background:var(--kotu);color:#fff}
+.alarm{margin-top:12px;padding:10px 12px;border-radius:8px;font-weight:600;border-left:4px solid}
+.alarm.l1{background:var(--uyari-z);color:var(--uyari)}.alarm.l2{background:var(--kotu-z);color:var(--kotu)}
+.kpi .big{font-size:2.6rem;font-weight:800;line-height:1.05;font-variant-numeric:tabular-nums;margin:2px 0;overflow-wrap:anywhere}
+.kpi .big u{text-decoration:none;font-size:1rem;color:var(--soluk);font-weight:600;margin-left:4px}
+.kpi .alt{font-size:.8rem;color:var(--soluk)}
+.mt{height:8px;border-radius:9px;background:var(--kod);overflow:hidden;margin-top:10px}
+.mt i{display:block;height:100%;width:0;background:var(--mavi);transition:width .6s}
+.ph{display:grid;grid-template-columns:30px 1fr auto;align-items:center;gap:10px;margin:12px 0}
+.ph b{font-size:.8rem;color:var(--soluk)}.ph .mt{margin:0;height:14px}
+.ph .v{font-size:1.25rem;font-weight:800;min-width:76px;text-align:right}
+dl.bilgi{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;margin:0;font-size:.9rem}
+dl.bilgi dt{color:var(--soluk)}dl.bilgi dd{margin:0;text-align:right;font-family:ui-monospace,Consolas,monospace;overflow-wrap:anywhere}
+.f{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:10px;margin-bottom:12px}
+.u{position:relative}.u em{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-style:normal;font-size:.8rem;color:var(--soluk);pointer-events:none}.u input{padding-right:36px}
+.not{font-size:.85rem;color:var(--soluk);margin:0 0 12px}
+.satir{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.kaydet{position:sticky;bottom:calc(var(--tab) + var(--sb) + 8px);z-index:5;margin-top:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-radius:12px;background:var(--lacivert);color:#fff;border-bottom:3px solid var(--turuncu)}
+.kaydet span{flex:1;font-size:.85rem;opacity:.85}.kaydet span.kirli{opacity:1;font-weight:700;color:#ffb38f}
+.kaydet button.ik{color:#fff;border-color:rgba(255,255,255,.55)}
+@media(min-width:900px){.kaydet{bottom:12px}}
+.wl{display:flex;flex-direction:column;gap:6px}
+.wi{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--kenar);border-radius:8px;background:var(--zemin)}
+.wi .n{flex:1;font-weight:600;overflow-wrap:anywhere}.wi .s{font-size:.75rem;color:var(--soluk)}
+.sig{display:inline-flex;align-items:flex-end;gap:2px}.sig i{width:4px;background:var(--kenar);border-radius:1px}.sig i.on{background:var(--iyi)}
+.ver{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center;text-align:center;margin-bottom:14px}
+.ver>div{padding:12px 8px;border-radius:10px;background:var(--kod);border:1px solid var(--kenar)}
+.ver small{display:block;font-size:.7rem;font-weight:700;color:var(--soluk);letter-spacing:.06em}
+.ver b{display:block;font:800 1.4rem ui-monospace,Consolas,monospace;margin-top:2px}
+.ver .ok{border:0;background:none;color:var(--soluk);font-size:1.3rem;padding:0}
+.ver .yeni{border-color:var(--turuncu);box-shadow:inset 0 0 0 1px var(--turuncu)}
+.tehlike{border:2px solid var(--kotu)}.tehlike h2{color:var(--kotu)}
+.dz{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--kenar)}
+.dz:last-child{border-bottom:0;padding-bottom:0}.dz p{margin:2px 0 0;font-size:.85rem;color:var(--soluk);max-width:520px}
+.tk{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--kenar);white-space:nowrap}
+th{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--soluk)}
+tr:last-child td{border-bottom:0}
+.ov{position:fixed;inset:0;z-index:30;background:rgba(6,20,29,.6);display:flex;align-items:flex-end;justify-content:center;padding:16px calc(16px + var(--sr)) calc(16px + var(--sb)) calc(16px + var(--sl))}
+@media(min-width:600px){.ov{align-items:center}}
+.dlg{background:var(--yuzey);border-radius:14px;max-width:440px;width:100%;padding:20px;border-top:4px solid var(--turuncu)}
+.dlg.red{border-top-color:var(--kotu)}.dlg h3{margin:0 0 6px;font-size:1.1rem}.dlg p{margin:0 0 12px;color:var(--soluk);font-size:.9rem}
+.dlg .satir{justify-content:flex-end;margin-top:14px}
+#toast{position:fixed;left:50%;bottom:calc(var(--tab) + var(--sb) + 14px);transform:translateX(-50%);z-index:40;background:var(--lacivert);color:#fff;padding:10px 16px;border-radius:10px;font-size:.9rem;font-weight:600;opacity:0;pointer-events:none;transition:opacity .25s;max-width:calc(100vw - 32px)}
+#toast.on{opacity:1}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="lg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#0c425e"/><g transform="translate(5 4.4) scale(.6)"><path d="M69.93 88.81C69.64 88.50 69.21 87.87 68.97 87.41C68.03 85.58 67.66 84.92 67.34 84.45C67.15 84.18 67.00 83.89 67.00 83.81C67.00 83.72 66.80 83.36 66.55 83.00C66.30 82.64 66.04 82.17 65.97 81.96C65.89 81.74 65.71 81.39 65.55 81.19C65.40 80.98 65.15 80.53 65.00 80.19C64.85 79.84 64.63 79.45 64.50 79.31C64.37 79.17 64.15 78.79 64.01 78.46C63.87 78.13 63.62 77.68 63.46 77.46C63.30 77.24 63.09 76.87 63.00 76.62C62.90 76.38 62.70 76.02 62.55 75.81C62.39 75.61 62.15 75.16 62.00 74.81C61.85 74.47 61.63 74.08 61.50 73.94C61.37 73.80 61.15 73.41 61.00 73.06C60.85 72.72 60.61 72.27 60.45 72.06C60.30 71.86 60.10 71.49 60.00 71.25C59.91 71.01 59.70 70.63 59.54 70.41C59.38 70.19 59.13 69.74 58.99 69.41C58.85 69.08 58.63 68.70 58.50 68.56C58.37 68.42 58.15 68.04 58.01 67.71C57.87 67.38 57.62 66.93 57.46 66.71C57.29 66.49 57.10 66.14 57.03 65.92C56.96 65.70 56.70 65.23 56.45 64.87C56.20 64.52 56.00 64.15 56.00 64.06C56.00 63.97 55.81 63.63 55.59 63.30C55.36 62.96 55.10 62.49 55.00 62.25C54.90 62.01 54.64 61.54 54.41 61.20C54.19 60.87 54.00 60.53 54.00 60.45C54.00 60.38 53.77 59.98 53.50 59.58C53.22 59.17 53.00 58.77 53.00 58.68C53.00 58.60 52.81 58.25 52.59 57.92C52.36 57.59 52.10 57.12 52.00 56.88C51.90 56.63 51.64 56.16 51.41 55.83C51.19 55.50 51.00 55.15 51.00 55.07C51.00 54.98 50.85 54.69 50.66 54.42C50.48 54.16 50.15 53.60 49.93 53.19C49.71 52.77 49.32 52.04 49.07 51.56C48.81 51.08 48.53 50.60 48.44 50.50C48.34 50.40 48.15 50.04 48.01 49.70C47.86 49.37 47.61 48.93 47.45 48.74C47.28 48.54 47.08 48.17 46.99 47.91C46.91 47.65 46.71 47.27 46.55 47.06C46.40 46.86 46.15 46.41 46.01 46.07C45.86 45.74 45.58 45.27 45.37 45.04C44.55 44.10 44.97 43.41 46.60 43.07C47.13 42.96 48.01 42.70 48.56 42.50C49.11 42.30 49.95 42.04 50.41 41.94C50.88 41.84 51.53 41.64 51.85 41.50C52.17 41.37 52.94 41.14 53.55 41.00C54.17 40.86 54.93 40.63 55.24 40.49C55.55 40.35 56.29 40.13 56.87 40.00C57.46 39.87 58.27 39.62 58.69 39.46C59.10 39.29 59.77 39.09 60.19 39.01C60.60 38.93 61.27 38.73 61.69 38.56C62.10 38.39 62.92 38.15 63.50 38.01C64.78 37.71 66.88 36.95 67.02 36.72C67.61 35.81 67.87 33.73 67.87 29.88C67.87 26.38 67.81 25.82 67.20 23.52C66.62 21.32 64.81 19.46 62.75 18.94C62.30 18.83 61.57 18.62 61.13 18.49C59.59 18.02 46.90 17.57 29.94 17.37C1.55 17.05 2.44 17.08 2.32 16.45C2.24 16.08 2.13 11.92 2.11 8.90C2.09 6.72 2.12 6.33 2.29 6.16C2.44 6.00 3.00 5.92 4.65 5.79C5.84 5.70 7.57 5.54 8.50 5.44C9.43 5.34 12.47 5.14 15.25 5.00C18.04 4.86 21.52 4.63 23.00 4.50C24.48 4.37 27.71 4.17 30.19 4.07C36.51 3.80 39.37 3.64 41.75 3.44C49.21 2.80 62.24 2.63 66.19 3.12C68.66 3.43 73.36 4.83 74.22 5.51C74.40 5.64 74.79 5.87 75.10 6.00C75.66 6.25 75.88 6.41 77.20 7.54C78.19 8.37 79.77 10.17 80.10 10.82C80.24 11.10 80.44 11.40 80.55 11.49C80.65 11.58 80.85 11.95 80.99 12.32C81.13 12.70 81.39 13.21 81.55 13.47C81.72 13.73 81.92 14.20 81.99 14.51C82.06 14.83 82.28 15.50 82.49 16.01C82.69 16.52 82.94 17.47 83.05 18.12C83.16 18.78 83.35 19.75 83.49 20.28C83.93 21.99 84.06 24.12 84.05 29.69C84.05 35.34 83.96 36.71 83.44 38.50C83.27 39.08 83.07 39.92 83.00 40.37C82.92 40.81 82.73 41.43 82.57 41.74C82.41 42.06 82.16 42.69 82.01 43.15C81.86 43.61 81.63 44.12 81.51 44.27C81.39 44.43 81.16 44.84 81.01 45.19C80.86 45.53 80.64 45.92 80.51 46.06C80.39 46.20 80.17 46.53 80.02 46.80C79.53 47.65 76.55 50.88 76.24 50.88C76.19 50.88 75.83 51.13 75.43 51.44C75.03 51.75 74.64 52.00 74.55 52.00C74.47 52.00 74.13 52.19 73.80 52.42C73.46 52.65 72.96 52.91 72.69 52.99C72.41 53.08 71.93 53.31 71.62 53.50C71.32 53.70 70.81 53.92 70.50 54.00C68.94 54.41 68.50 55.39 69.44 56.38C69.60 56.55 69.85 56.96 69.99 57.29C70.13 57.62 70.38 58.07 70.54 58.29C70.71 58.51 70.90 58.86 70.97 59.08C71.04 59.30 71.30 59.77 71.55 60.13C71.80 60.48 72.00 60.85 72.00 60.93C72.00 61.02 72.15 61.31 72.34 61.58C72.52 61.84 72.85 62.40 73.07 62.81C74.16 64.87 74.36 65.22 74.67 65.67C74.85 65.94 75.00 66.23 75.00 66.32C75.00 66.40 75.19 66.75 75.41 67.08C75.64 67.41 75.90 67.88 76.00 68.12C76.09 68.37 76.30 68.73 76.45 68.94C76.61 69.14 76.85 69.59 77.00 69.94C77.15 70.28 77.37 70.67 77.50 70.81C77.63 70.95 77.85 71.34 78.00 71.69C78.15 72.03 78.35 72.40 78.45 72.51C78.61 72.69 78.89 73.20 79.94 75.25C80.14 75.65 80.41 76.08 80.52 76.21C80.64 76.33 80.85 76.71 80.99 77.04C81.13 77.37 81.38 77.82 81.54 78.04C81.70 78.26 81.91 78.63 82.00 78.88C82.10 79.12 82.36 79.59 82.59 79.92C82.81 80.25 83.00 80.60 83.00 80.68C83.00 80.77 83.15 81.06 83.34 81.33C83.67 81.80 84.05 82.48 84.91 84.12C85.14 84.57 85.48 85.16 85.67 85.42C85.85 85.69 86.00 85.98 86.00 86.07C86.00 86.15 86.20 86.53 86.45 86.89C87.37 88.26 87.57 88.89 87.16 89.10C87.04 89.17 83.23 89.25 78.70 89.30L70.46 89.38L69.93 88.81Z" fill="#fff" fill-rule="evenodd"/><rect x="18" y="43.4" width="15.4" height="29" fill="#00b2ff"/></g></symbol>
+<symbol id="iL" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+<symbol id="iS" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h10M7 13h6M7 17h8"/></g></symbol>
+<symbol id="iC" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></g></symbol>
+<symbol id="iW" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 9a15 15 0 0 1 20 0M5 13a10 10 0 0 1 14 0M8.5 16.5a5 5 0 0 1 7 0"/><circle cx="12" cy="20" r="1"/></g></symbol>
+<symbol id="iT" viewBox="0 0 24 24"><path d="M9 3v6l-5 9a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3l-5-9V3M8 3h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="iO" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</defs></svg>
 
-<div class="wrap">
-  <div class="card navCard">
-    <h2>YONLENDIRME</h2>
-    <div class="navRow">
-      <a id="navAdmin" class="navBtn" href="/admin">CANLI PANEL</a>
-      <a id="navCalibration" class="navBtn" href="/calibration">KALIBRASYON</a>
-      <a id="navWifi" class="navBtn" href="/wifi">WIFI AYARLARI</a>
-      <a class="navBtn" href="/">KULLANICI EKRANI</a>
+<!-- GIRIS: jeton yoksa yalnizca bu gorunur -->
+<main class="giris-kap" id="loginView">
+<form class="giris" id="loginForm" autocomplete="on">
+  <div class="marka"><svg class="lg"><use href="#lg"/></svg><span>RTevCharge<small>Elektrikli araç şarjı · yönetim paneli</small></span></div>
+  <h1>Yönetici girişi</h1>
+  <div class="alan"><label for="lgUser">Kullanıcı adı</label><input id="lgUser" name="username" value="admin" readonly autocomplete="username"></div>
+  <div class="alan"><label for="lgPass">Parola</label><div class="pw"><input id="lgPass" name="password" type="password" required autocomplete="current-password" maxlength="64" autocapitalize="off" spellcheck="false"><button type="button" class="ik" onclick="togglePw('lgPass',this)">Göster</button></div></div>
+  <div class="mesaj" id="lgMsg" role="alert" hidden></div>
+  <button type="submit" id="lgBtn">Giriş</button>
+  <p class="not" style="margin:12px 0 0" id="lgInfo">5 hatalı denemeden sonra giriş geçici olarak kilitlenir.</p>
+</form>
+</main>
+
+<!-- PANEL: girisle acilir -->
+<div id="appView" hidden>
+<header class="ust"><div class="ust-ic">
+  <div class="marka"><svg class="lg"><use href="#lg"/></svg><span>RTevCharge<small>Elektrikli araç şarjı · yönetim paneli</small></span></div>
+  <div class="ist" title="Dokun: IP'yi kopyala" onclick="copyIp()"><b id="stationTitle">-</b><small><span id="ipTop">-</span> · <span id="hostTop">-</span></small></div>
+  <button class="ic" id="refreshBtn" onclick="refreshAll()" aria-label="Yenile">&#8635;</button>
+  <button onclick="logout()">Çıkış</button>
+</div></header>
+<div id="netStrip" role="status" aria-live="polite" hidden></div>
+<div id="pwWarn" class="mesaj uyari" role="alert" hidden style="margin:0;border-radius:0;text-align:center"><b>Varsayılan parola kullanılıyor.</b> Güvenlik için <a href="#settings">Ayarlar › Panel parolası</a> bölümünden hemen değiştirin.</div>
+
+<div class="app">
+<nav id="navCard" aria-label="Ana menü">
+  <a class="nav" id="navAdmin" href="#live" data-s="liveCard"><svg><use href="#iL"/></svg>Canlı</a>
+  <a class="nav" id="navStatus" href="#status" data-s="statusCard"><svg><use href="#iS"/></svg>Durum</a>
+  <a class="nav" id="navCalibration" href="#settings" data-s="calibrationCard"><svg><use href="#iC"/></svg>Ayarlar</a>
+  <a class="nav" id="navWifi" href="#wifi" data-s="wifiCard"><svg><use href="#iW"/></svg>Wi-Fi</a>
+  <a class="nav yan" id="navTest" href="#test" data-s="testCard"><svg><use href="#iT"/></svg>Test</a>
+  <a class="nav" id="navOta" href="#ota" data-s="otaCard"><svg><use href="#iO"/></svg>Yazılım</a>
+</nav>
+<main id="icerik">
+
+<!-- CANLI -->
+<section class="sec" id="liveCard">
+<div class="izgara">
+  <div class="kart genis">
+    <div class="hero">
+      <div class="st"><div class="stL" id="stBox">-</div><div><div class="stT" id="stTxt">-</div><div class="stS"><span id="badgeState">STATE:-</span> · Ham <span id="sRawTop">-</span> · Mod <span id="modeTxt">-</span> · <span id="badgeRelay">R: -</span></div></div></div>
+      <div class="seg" id="modeSeg"><button data-m="0" onclick="chargeCmd(0)">Otomatik</button><button data-m="1" onclick="chargeCmd(1)">Başlat</button><button data-m="2" class="dur" onclick="chargeCmd(2)">Durdur</button></div>
     </div>
-    <div class="small" style="margin-top:10px">Admin panelde sadece canli veriler tutulur. Ayarlar ayri pencerelerden yonetilir.</div>
+    <div class="alarm" id="alarmBox" hidden></div>
   </div>
-
-  <div class="card pageSection" id="liveCard">
-    <h2>CANLI VERILER</h2>
-    <div class="kv"><div class="k">State (Stable/Raw)</div><div class="v mono"><span id="sStb">-</span> / <span id="sRaw">-</span></div></div>
-    <div class="kv"><div class="k">CP High / Low</div><div class="v mono"><span id="cH">-</span> / <span id="cL">-</span></div></div>
-    <div class="kv"><div class="k">ADC High / Low</div><div class="v mono"><span id="aH">-</span> / <span id="aL">-</span></div></div>
-    <div class="kv"><div class="k">PP GPIO16</div><div class="v mono"><span id="ppV">-</span> / <span id="ppRaw">-</span></div></div>
-    <div class="sep"></div>
-    <h2>UZAKTAN LOG</h2>
-    <div class="small">Son satirlar RAM'de tutulur. Telegram: kart adi + log</div>
-    <pre id="logBox" style="max-height:220px;overflow:auto;background:#070d18;padding:10px;border-radius:10px;font-size:11px;line-height:1.4;white-space:pre-wrap;">-</pre>
-    <div class="btns"><button onclick="fetchLogs()">LOG YENILE</button></div>
-    <div class="sep"></div>
-    <h2>KULLANICI EKRANI OZEL CSS</h2>
-    <div class="small">Buraya yazdigin CSS, kullanici ekranindaki tum elemanlari ezebilir. Ornek: `body{background:#000}` veya `.metricCard{border-radius:36px}`</div>
-    <div class="kv"><div class="k">Ozel CSS</div><div class="v"><textarea id="userCssSet" onfocus="p()" onblur="r()" placeholder=".metricCard{outline:1px solid red}">__USER_CSS_TEXT__</textarea></div></div>
-    <div class="btns" style="margin-top:12px">
-      <button class="primary" onclick="applyUserCss()">CSS KAYDET</button>
-      <button onclick="window.open('/','_blank')">KULLANICI EKRANINI AC</button>
-    </div>
+  <div class="kart kpi"><h2>Anlık güç</h2><div class="big"><span id="pwr">-</span><u>kW</u></div><div class="alt">Tavan ≈ <span id="pMax">-</span> kW</div><div class="mt"><i id="pBar"></i></div></div>
+  <div class="kart kpi"><h2>Enerji</h2><div class="big"><span id="ekwh">-</span><u>kWh</u></div><div class="alt">Canlı seans <span id="sLiveKWh">-</span> kWh</div></div>
+  <div class="kart kpi"><h2>Süre</h2><div class="big"><span id="tsec">-</span></div><div class="alt">Faz <span id="phase">-</span> · Limit <span id="limitTxt">-</span> A</div></div>
+  <div class="kart">
+    <h2>Faz akımları <span class="s rozet" id="iAvgTag">ORT -</span></h2>
+    <div class="ph"><b>L1</b><div class="mt"><i id="b1"></i></div><span class="v"><span id="i1">-</span> A</span></div>
+    <div class="ph"><b>L2</b><div class="mt"><i id="b2"></i></div><span class="v"><span id="i2">-</span> A</span></div>
+    <div class="ph"><b>L3</b><div class="mt"><i id="b3"></i></div><span class="v"><span id="i3">-</span> A</span></div>
   </div>
-
-  <div class="card pageSection" id="calibrationCard">
-    <div class="sep"></div>
-    <h2>ZAMANLAMA</h2>
-    <div class="kv"><div class="k">Loop dongusu (ms)</div><div class="v"><input id="lInt" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">Role acma (ms)</div><div class="v"><input id="onD" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">Role birakma (ms)</div><div class="v"><input id="offD" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">Stable count</div><div class="v"><input id="stb" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">Akim limiti (A)</div><div class="v"><input id="limitASet" min="6" max="32" step="1" onfocus="p()" onblur="r()"></div></div>
-
-    <div class="sep"></div>
-    <h2>CP KALIBRASYON</h2>
-    <div class="small">State A'da (arac yok, PWM kapali) divider otomatik 12.00V'a cekilir. TH_B/C/D/E ve stable count'a dokunulmaz; onlar senin kalici ayarin.</div>
-    <div class="kv"><div class="k">Divider</div><div class="v"><input id="div" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">TH_B / TH_C</div><div class="v grid2"><input id="thb" onfocus="p()" onblur="r()"><input id="thc" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">TH_D / TH_E</div><div class="v grid2"><input id="thd" onfocus="p()" onblur="r()"><input id="the" onfocus="p()" onblur="r()"></div></div>
-
-    <div class="sep"></div>
-    <h2>AKIM KALIBRASYONU</h2>
-    <div class="hintBox">
-      0-10A araliginda varsayilan kalibrasyon 12.0. 10-30A araliginda varsayilan ek offset 1.0A.
-      Buradan hem faz bazli kalibrasyon katsayilarini hem de orta aralik ofsetini degistirebilirsin.
-    </div>
-    <div class="kv"><div class="k">Ical A / B / C</div><div class="v grid3"><input id="icalA" onfocus="p()" onblur="r()"><input id="icalB" onfocus="p()" onblur="r()"><input id="icalC" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">Offset A / B / C</div><div class="v grid3"><input id="ioffA" onfocus="p()" onblur="r()"><input id="ioffB" onfocus="p()" onblur="r()"><input id="ioffC" onfocus="p()" onblur="r()"></div></div>
-    <div class="kv"><div class="k">0-10A profil</div><div class="v grid2"><input id="rngLowMax" onfocus="p()" onblur="r()" placeholder="max A"><input id="rngLowOff" onfocus="p()" onblur="r()" placeholder="offset A"></div></div>
-    <div class="kv"><div class="k">10-30A profil</div><div class="v grid2"><input id="rngMidMax" onfocus="p()" onblur="r()" placeholder="max A"><input id="rngMidOff" onfocus="p()" onblur="r()" placeholder="offset A"></div></div>
-    <div class="small">Varsayilan tavsiye: `rngLowMax=10`, `rngLowOff=0`, `rngMidMax=30`, `rngMidOff=1`.</div>
-
-    <div class="sep"></div>
-    <h2>PENS AMPERMETRE YARDIMI</h2>
-    <div class="kv"><div class="k">Canli A / B / C</div><div class="v mono"><span id="liveIa">-</span> / <span id="liveIb">-</span> / <span id="liveIc">-</span> A</div></div>
-    <div class="kv"><div class="k">Canli ortalama</div><div class="v mono"><span id="liveIAvg">-</span> A</div></div>
-    <div class="kv"><div class="k">Pens 0-10A A / B / C</div><div class="v grid3"><input id="clampLowA" onfocus="p()" onblur="r()" placeholder="A"><input id="clampLowB" onfocus="p()" onblur="r()" placeholder="B"><input id="clampLowC" onfocus="p()" onblur="r()" placeholder="C"></div></div>
-    <div class="btns"><button onclick="fillClampLow()">Pens A/B/C ile Ical doldur</button></div>
-    <div class="kv"><div class="k">Pens 10-30A A / B / C</div><div class="v grid3"><input id="clampMidA" onfocus="p()" onblur="r()" placeholder="A"><input id="clampMidB" onfocus="p()" onblur="r()" placeholder="B"><input id="clampMidC" onfocus="p()" onblur="r()" placeholder="C"></div></div>
-    <div class="btns"><button onclick="fillClampMid()">Pens A/B/C ile offset doldur</button></div>
-    <div class="small">Ilk buton her faz icin girilen pens degerine gore `Ical A/B/C` alanlarini ayarlar. Ikinci buton her fazin pens-ekran farkina gore `Offset A/B/C` alanlarini doldurur.</div>
-
-    <div class="sep"></div>
-    <h2>ISTASYON KONUMU</h2>
-    <div class="kv"><div class="k">Istasyon adi</div><div class="v"><input id="stationNameSet" onfocus="p()" onblur="r()" placeholder="Istasyon ABC123"></div></div>
-    <div class="kv"><div class="k">Latitude / Longitude</div><div class="v grid2"><input id="mapLat" onfocus="p()" onblur="r()" placeholder="37.94559"><input id="mapLng" onfocus="p()" onblur="r()" placeholder="32.58082"></div></div>
-    <div class="kv"><div class="k">Uretilen adres</div><div class="v mono"><span id="stationAddr">-</span></div></div>
-    <div class="small">Istasyon adi bos birakilirsa cihaz MAC bilgisinden otomatik uretilen varsayilan isim kullanilir.</div>
-    <div class="small">Konum kaydedildiginde harita merkezi ve istasyon adres metni bu koordinatlara gore guncellenir.</div>
-
-    <div class="btns" style="margin-top:12px">
-      <button class="primary" onclick="applyCal()">UYGULA</button>
-      <button onclick="pull(true)">YENILE</button>
-    </div>
-  </div>
-
-  <div class="card pageSection" id="statusCard">
-    <div class="hero" id="displayPanel">
-      <div class="heroTop">
-        <div style="display:flex;gap:8px;align-items:center">
-          <h2 style="margin:0">RotosisEVSE</h2>
-          <span class="badge" id="badgeState">STATE:-</span>
-        </div>
-        <span class="badge" id="badgeRelay">R: -</span>
-      </div>
-      <div class="kv"><div class="k">I1 / I2 / I3</div><div class="v mono"><span id="i1">-</span> / <span id="i2">-</span> / <span id="i3">-</span> A</div></div>
-      <div class="kv"><div class="k">Power</div><div class="v mono"><span id="pwr">-</span> kW</div></div>
-      <div class="kv"><div class="k">Energy</div><div class="v mono"><span id="ekwh">-</span> kWh</div></div>
-      <div class="kv"><div class="k">Time</div><div class="v mono"><span id="tsec">-</span></div></div>
-      <div class="kv"><div class="k">Phase</div><div class="v mono"><span id="phase">-</span></div></div>
-      <div class="kv"><div class="k">Wi-Fi</div><div class="v mono"><span id="wifiSsid">-</span> (<span id="wifiLoc">-</span>)</div></div>
-      <div class="kv"><div class="k">IP</div><div class="v mono"><span id="ip">-</span></div></div>
-      <div class="kv"><div class="k">Host</div><div class="v mono"><span id="host">-</span></div></div>
-    <div class="kv"><div class="k">Relay</div><div class="v mono"><span id="rLbl">-</span></div></div>
-    </div>
-  </div>
-
-  <div class="card pageSection" id="wifiCard">
-    <h2>WIFI BAGLANTISI</h2>
-    <div class="kv"><div class="k">Ozel profil</div><div class="v"><label><input type="checkbox" id="wifiEnabled" onfocus="p()" onblur="r()"> Etkin</label></div></div>
-    <div class="kv"><div class="k">SSID / Sifre</div><div class="v grid2"><input id="wifiSsidCfg" onfocus="p()" onblur="r()" placeholder="SSID"><input id="wifiPassCfg" type="password" onfocus="p()" onblur="r()" placeholder="Sifre"></div></div>
-    <div class="kv"><div class="k">IP modu</div><div class="v"><select id="wifiModeCfg" onfocus="p()" onblur="r()" onchange="toggleWifiModeFields()"><option value="dhcp">DHCP</option><option value="static">Statik</option></select></div></div>
-    <div id="wifiStaticFields">
-      <div class="kv"><div class="k">IP / Gateway</div><div class="v grid2"><input id="wifiIpCfg" onfocus="p()" onblur="r()" placeholder="192.168.1.200"><input id="wifiGwCfg" onfocus="p()" onblur="r()" placeholder="192.168.1.1"></div></div>
-      <div class="kv"><div class="k">Subnet / DNS1</div><div class="v grid2"><input id="wifiSubnetCfg" onfocus="p()" onblur="r()" placeholder="255.255.255.0"><input id="wifiDns1Cfg" onfocus="p()" onblur="r()" placeholder="8.8.8.8"></div></div>
-      <div class="kv"><div class="k">DNS2</div><div class="v"><input id="wifiDns2Cfg" onfocus="p()" onblur="r()" placeholder="1.1.1.1"></div></div>
-    </div>
-    <div class="btns">
-      <button onclick="scanWifiList()">WIFI TARA</button>
-      <button class="primary" onclick="applyWifiSettings()">WIFI AYARLARINI KAYDET</button>
-    </div>
-    <div class="small" id="wifiScanStatus">Tarama hazir degil</div>
-    <div class="small" id="wifiCurrentMode">Baglanti profili: varsayilan liste</div>
-    <div class="small" id="wifiConnectedInfo">Mevcut baglanti: bagli degil</div>
-    <div id="wifiScanList" class="small"></div>
-  </div>
-
-  <div class="card pageSection" id="testCard">
-    <div class="sep"></div>
-
-    <h2>ROLE</h2>
-    <div class="btns">
-      <button class="primary" onclick="send('/relay?on=1')">MANUEL AC</button>
-      <button class="danger" onclick="send('/relay?on=0')">MANUEL BIRAK</button>
-      <button onclick="send('/relay_auto?en=1')">AUTO AC</button>
-    </div>
-    <div class="small">Not: Manuel komut auto akisina aninda mudahale eder.</div>
-  </div>
-
-  <div class="card pageSection" id="otaCard">
-    <div class="sep"></div>
-    <h2>SIFIRLAMA GECMISI</h2>
-    <div class="kv"><div class="k">Toplam</div><div class="v mono"><span id="rstTotal">0</span></div></div>
-    <div class="kv"><div class="k">Anlik / Gecmis</div><div class="v mono"><span id="rstNow">0</span> / <span id="rstHist">0</span></div></div>
-    <div class="kv"><div class="k">Son islem</div><div class="v mono"><span id="rstLastMode">YOK</span> @ <span id="rstLastSec">0</span>s</div></div>
-
-    <div class="sep"></div>
-    <h2>OTA TESHIS</h2>
-    <div class="kv"><div class="k">FW / Remote</div><div class="v mono"><span id="otaCurVer">-</span> / <span id="otaRemoteVer">-</span></div></div>
-    <div class="kv"><div class="k">Calisan bolum</div><div class="v mono"><span id="otaPart">-</span></div></div>
-    <div class="kv"><div class="k">Image state</div><div class="v mono"><span id="otaImgState">-</span></div></div>
-    <div class="kv"><div class="k">Durum</div><div class="v mono"><span id="otaStatus">-</span></div></div>
-    <div class="kv"><div class="k">Son kontrol</div><div class="v mono"><span id="otaAge">-</span></div></div>
-    <div class="kv"><div class="k">Hata</div><div class="v mono"><span id="otaError">Hata yok</span></div></div>
-    <div class="btns" style="margin-top:10px">
-      <button class="primary" onclick="window.location='/update'">BIN YUKLE</button>
-      <button class="primary" onclick="runOtaCheckAdmin()">OTA KONTROL ET</button>
-      <button class="primary" id="otaInstallBtn" onclick="runOtaInstall()" disabled>GUNCELLEMEYI YUKLE</button>
-      <button onclick="runBootPrev()">ONCEKI OTA'YA DON</button>
-      <button class="danger" onclick="runBootFactory()">FACTORY'E DON</button>
-    </div>
-    <div class="small">Not: OTA kontrolu yeni surumu sadece tespit eder. Yukleme icin ayrica onay vermen gerekir. `Onceki OTA'ya don` aktif olmayan OTA slotunu dener. Onceki surum oradaysa geri donersin. `Factory'e don` ise USB ile yukledigin kurtarma surumunu acar.</div>
+  <div class="kart">
+    <h2>Control Pilot <button class="ik" type="button" onclick="fetchLogs()">Log</button></h2>
+    <dl class="bilgi"><dt>State kararlı / ham</dt><dd><span id="sStb">-</span> / <span id="sRaw">-</span></dd><dt>CP yüksek / düşük</dt><dd><span id="cH">-</span> / <span id="cL">-</span></dd><dt>ADC yüksek / düşük</dt><dd><span id="aH">-</span> / <span id="aL">-</span></dd><dt>PP GPIO16</dt><dd><span id="ppV">-</span> / <span id="ppRaw">-</span></dd><dt>Röle</dt><dd id="rLbl">-</dd></dl>
+    <pre id="logBox" hidden style="white-space:pre-wrap;font-size:.75rem;max-height:180px;overflow:auto"></pre>
   </div>
 </div>
+</section>
+
+<!-- DURUM -->
+<section class="sec" id="statusCard">
+<div class="izgara">
+  <div class="kart" id="displayPanel"><h2>Ağ ve cihaz <span class="s rozet" id="connTag">-</span></h2>
+    <dl class="bilgi"><dt>Wi-Fi</dt><dd><span id="wifiSsid">-</span> (<span id="wifiLoc">-</span>)</dd><dt>IP</dt><dd id="ip">-</dd><dt>Host</dt><dd id="host">-</dd><dt>MAC</dt><dd id="mac">-</dd><dt>İstasyon kodu</dt><dd id="stationCode">-</dd><dt>Adres</dt><dd id="stationAddr">-</dd><dt>Son güncelleme</dt><dd id="lastUpd">-</dd></dl></div>
+  <div class="kart"><h2>Sıfırlama geçmişi</h2>
+    <dl class="bilgi"><dt>Toplam</dt><dd id="rstTotal">0</dd><dt>Anlık / geçmiş</dt><dd><span id="rstNow">0</span> / <span id="rstHist">0</span></dd><dt>Son işlem</dt><dd><span id="rstLastMode">YOK</span> @ <span id="rstLastSec">0</span>s</dd><dt>Firmware</dt><dd id="fwSmall">-</dd></dl></div>
+  <div class="kart genis"><h2>Son şarj seansları <button class="s ik" onclick="loadHistory()">Yenile</button></h2>
+    <div class="tk"><table><thead><tr><th>#</th><th>Başlangıç</th><th>Süre</th><th>Enerji</th><th>Ort. güç</th><th>Faz</th></tr></thead><tbody id="histBody"><tr><td colspan="6">-</td></tr></tbody></table></div></div>
+</div>
+</section>
+
+<!-- AYARLAR (kalibrasyon + istasyon + guvenlik) -->
+<section class="sec" id="calibrationCard">
+<div class="izgara" id="calForm">
+  <div class="kart"><h2>Zamanlama ve limit</h2><p class="not">Bu kartta kontaktör gecikmesiz seviye sürülür (GPIO4, C/D iken HIGH). Röle açma/bırakma süreleri uygulanmaz.</p><div class="f" data-f="lInt|Döngü|ms;stb|Stable count;onD|Röle açma (uygulanmaz)|ms;offD|Röle bırakma (uygulanmaz)|ms;limitASet|Akım limiti 6-32|A"></div></div>
+  <div class="kart"><h2>CP kalibrasyon</h2><p class="not">State A ve PWM kapalıyken bölücü 12.00 V'a otomatik çekilir. Eşikler kalıcı kaydedilir, otomatik değişmez.</p><div class="f" data-f="div|Divider;thb|TH_B|V;thc|TH_C|V;thd|TH_D|V;the|TH_E|V"></div></div>
+  <div class="kart genis"><h2>Akım kalibrasyonu</h2>
+    <p class="not">Varsayılan: 0-10 A için Ical 12.0; 10-30 A için ek offset 1.0 A. Tavsiye: rngLowMax 10, rngLowOff 0, rngMidMax 30, rngMidOff 1.</p>
+    <div class="f" data-f="icalA|Ical L1;icalB|Ical L2;icalC|Ical L3;ioffA|Offset L1|A;ioffB|Offset L2|A;ioffC|Offset L3|A;rngLowMax|0-10A maks.|A;rngLowOff|0-10A offset|A;rngMidMax|10-30A maks.|A;rngMidOff|10-30A offset|A"></div></div>
+  <div class="kart genis"><h2>Pens ampermetre yardımı <span class="s rozet">Canlı <span id="liveIa">-</span> / <span id="liveIb">-</span> / <span id="liveIc">-</span> · ort <span id="liveIAvg">-</span> A</span></h2>
+    <p class="not">1) 0-10 A'de pens değerlerini girip "Ical doldur". 2) 10-30 A'de girip "Offset doldur". 3) Alttan Uygula.</p>
+    <div class="f" data-f="clampLowA|Pens düşük L1;clampLowB|Pens düşük L2;clampLowC|Pens düşük L3"><div><label>&nbsp;</label><button class="ik" style="width:100%" onclick="fillClampLow()">Ical doldur</button></div></div>
+    <div class="f" data-f="clampMidA|Pens orta L1;clampMidB|Pens orta L2;clampMidC|Pens orta L3"><div><label>&nbsp;</label><button class="ik" style="width:100%" onclick="fillClampMid()">Offset doldur</button></div></div></div>
+  <div class="kart genis"><h2>İstasyon</h2><div class="f">
+    <div><label for="stationNameSet">İstasyon adı</label><input id="stationNameSet" placeholder="Boşsa MAC'ten otomatik"></div>
+    <div><label for="mapLat">Enlem</label><input id="mapLat" inputmode="decimal" placeholder="37.94559"></div>
+    <div><label for="mapLng">Boylam</label><input id="mapLng" inputmode="decimal" placeholder="32.58082"></div></div>
+    <dl class="bilgi"><dt>Üretilen adres</dt><dd id="stationAddr2">-</dd></dl></div>
+</div>
+<div class="kaydet"><span id="calDirty">Değişiklik yok</span><button class="ik" onclick="pull(true)">Geri al</button><button onclick="applyCal()">Uygula</button></div>
+
+<div class="izgara" style="margin-top:14px">
+  <div class="kart"><h2>Panel parolası</h2>
+    <form id="pwForm" autocomplete="off">
+      <input type="text" name="username" value="admin" autocomplete="username" hidden>
+      <div class="f" style="grid-template-columns:1fr">
+        <div><label for="pwCur">Mevcut parola</label><input id="pwCur" type="password" required autocomplete="current-password"></div>
+        <div><label for="pwNew">Yeni parola (en az 10 karakter)</label><input id="pwNew" type="password" required minlength="10" maxlength="64" autocomplete="new-password"></div>
+        <div><label for="pwNew2">Yeni parola (tekrar)</label><input id="pwNew2" type="password" required minlength="10" maxlength="64" autocomplete="new-password"></div>
+      </div>
+      <div class="satir"><button type="submit">Parolayı değiştir</button><button type="button" class="ik" onclick="togglePw('pwNew',this);togglePw('pwNew2');togglePw('pwCur')">Göster</button></div>
+      <div class="mesaj" id="pwMsg" role="status" hidden></div>
+    </form></div>
+  <div class="kart"><h2>Oturum</h2>
+    <dl class="bilgi"><dt>Kullanıcı</dt><dd>admin</dd><dt>Otomatik çıkış</dt><dd><span id="idleLeft">15:00</span> sonra</dd></dl>
+    <div class="satir" style="margin-top:12px"><button class="ik" onclick="location.hash='test'">Servis testleri</button><button class="th" onclick="logout()">Çıkış yap</button></div></div>
+  <div class="kart genis" id="cloudBox"><h2>Bulut bağlantısı <span class="s rozet" id="cloudTag">-</span></h2>
+    <div class="mesaj uyari" id="cloudWarn" style="margin:0 0 12px" hidden>Bulut ayarı yapılmadı: istasyon kodunu kontrol edip sunucudan alınan gizli anahtarı girin.</div>
+    <dl class="bilgi"><dt>Durum</dt><dd id="cloudPhase">-</dd><dt>Son yoklama</dt><dd id="cloudAge">-</dd><dt>Son HTTP</dt><dd id="cloudHttp">-</dd><dt>Son komut</dt><dd id="cloudCmd">-</dd><dt>Gizli anahtar</dt><dd id="cloudSecretState">-</dd></dl>
+    <label class="ck"><input type="checkbox" id="cloudOn">Bulut bağlantısı açık</label>
+    <div class="f">
+      <div><label for="cloudCode">İstasyon kodu</label><input id="cloudCode" autocapitalize="characters" spellcheck="false" maxlength="16" placeholder="Boşsa MAC'ten"></div>
+      <div><label for="cloudUrl">Sunucu adresi</label><input id="cloudUrl" autocapitalize="off" spellcheck="false" maxlength="95" placeholder="https://sarj.rotosis.com"></div>
+      <div><label for="cloudSecret">Gizli anahtar</label><input id="cloudSecret" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="43" placeholder="Değişmeyecekse boş"></div>
+    </div>
+    <div class="satir"><button onclick="saveCloud()">Kaydet</button><button class="th" onclick="clearCloudSecret()">Anahtarı sil</button></div>
+    <label class="ck" style="margin-top:8px"><input type="checkbox" id="cloudReq" onclick="return toggleCloudReq(event)">Şarjı yalnızca uygulamadan başlat</label>
+    <p class="not">Açıkken araç takılsa da şarj, uygulamadan "Başlat" gelmeden başlamaz. Başladıktan sonra bağlantı kopsa da şarj sürer; uygulamadan durdurma, aracı ayırma ya da paneldeki Durdur ile biter.</p></div>
+  <div class="kart genis" id="schedBox"><h2>Planlı şarj (puant) <span class="s rozet" id="schedTag">-</span></h2>
+    <p class="not" id="schedNow">-</p>
+    <label class="ck"><input type="checkbox" id="schedOn">Yasaklı saatlerde şarj etme</label>
+    <div id="schedRows"></div>
+    <div class="satir"><button class="ik" onclick="schedAdd()">Aralık ekle</button><button class="ik" onclick="schedPeak()">Puant (17–22)</button><button onclick="schedSave()">Kaydet</button></div>
+    <p class="not" style="margin:10px 0 0">Türkiye saati (UTC+3). Gece yarısını aşan aralık olabilir (örn. 23:00–06:00); aralık başladığı güne aittir. En çok 3 aralık. Cihaz saati bilinmiyorsa kısıtlama uygulanmaz.</p></div>
+</div>
+</section>
+
+<!-- WIFI -->
+<section class="sec" id="wifiCard">
+<div class="izgara">
+  <div class="kart"><h2>Bağlantı profili</h2>
+    <div class="mesaj uyari" style="margin:0 0 12px"><div id="wifiConnectedInfo">Mevcut bağlantı: bağlı değil</div><div id="wifiCurrentMode">Bağlantı profili: varsayılan liste</div></div>
+    <label class="ck"><input type="checkbox" id="wifiEnabled">Özel profil etkin</label>
+    <div class="f">
+      <div><label for="wifiSsidCfg">SSID</label><input id="wifiSsidCfg" autocapitalize="off" spellcheck="false"></div>
+      <div><label for="wifiPassCfg">Şifre</label><input id="wifiPassCfg" type="password" placeholder="Değişmeyecekse boş" autocomplete="new-password"></div>
+      <div><label for="wifiModeCfg">IP modu</label><select id="wifiModeCfg" onchange="toggleWifiModeFields()"><option value="dhcp">DHCP</option><option value="static">Statik</option></select></div>
+    </div>
+    <div id="wifiStaticFields" class="f" data-f="wifiIpCfg|IP||192.168.1.200;wifiGwCfg|Gateway||192.168.1.1;wifiSubnetCfg|Subnet||255.255.255.0;wifiDns1Cfg|DNS1||8.8.8.8;wifiDns2Cfg|DNS2||1.1.1.1"></div>
+    <button onclick="applyWifiSettings()">Kaydet ve bağlan</button></div>
+  <div class="kart"><h2>Çevredeki ağlar <button class="s ik" onclick="scanWifiList()">Tara</button></h2>
+    <p class="not" id="wifiScanStatus">Tarama hazır değil</p><div id="wifiScanList" class="wl"></div></div>
+</div>
+</section>
+
+<!-- TEST -->
+<section class="sec" id="testCard">
+<div class="bas"><h1>Servis testleri</h1><button class="ik" onclick="location.hash='settings'">Ayarlar'a dön</button></div>
+<div class="mesaj uyari" style="margin:0 0 14px"><b>Servis modu.</b> Bu komutlar otomatik akışa anında müdahale eder; araç bağlıyken dikkatli kullanın.</div>
+<div class="izgara">
+  <div class="kart"><h2>Röle <span class="s rozet" id="relayTag">-</span></h2>
+    <div class="satir"><button class="iy" onclick="send('/relay?on=1')">Manuel aç</button><button class="th" onclick="send('/relay?on=0')">Manuel bırak</button><button class="ik" onclick="send('/relay_auto?en=1')">Otomatiğe dön</button></div></div>
+  <div class="kart"><h2>MOSFET darbe testi</h2>
+    <div class="satir"><button class="th" onclick="send('/pulse_reset')">RESET (GPIO 7)</button><button class="iy" onclick="send('/pulse_set')">SET (GPIO 15)</button></div>
+    <p class="not" style="margin:10px 0 0">Her basış 100 ms HIGH darbe gönderir.</p></div>
+</div>
+</section>
+
+<!-- YAZILIM / OTA -->
+<section class="sec" id="otaCard">
+<div class="izgara">
+  <div class="kart"><h2>Yazılım güncelleme <span class="s rozet" id="otaTag">-</span></h2>
+    <div class="ver"><div><small>KURULU</small><b id="otaCurVer">-</b></div><div class="ok">&rarr;</div><div id="otaRemoteBox"><small>SUNUCUDA</small><b id="otaRemoteVer">-</b></div></div>
+    <div class="satir"><button class="ik" onclick="runOtaCheckAdmin()">Kontrol et</button><button id="otaInstallBtn" onclick="runOtaInstall()" disabled>Güncellemeyi yükle</button><button class="ik" onclick="openUpdate()">.bin yükle</button></div>
+    <p class="not" style="margin:10px 0 0">Kontrol yalnızca yeni sürümü bulur; yükleme ayrıca onay ister, şarj durur ve cihaz yeniden başlar.</p></div>
+  <div class="kart"><h2>Teşhis</h2>
+    <dl class="bilgi"><dt>Çalışan bölüm</dt><dd id="otaPart">-</dd><dt>Image state</dt><dd id="otaImgState">-</dd><dt>Durum</dt><dd id="otaStatus">-</dd><dt>Son kontrol</dt><dd id="otaAge">-</dd><dt>Hata</dt><dd id="otaError">Hata yok</dd></dl></div>
+  <div class="kart genis tehlike"><h2>Tehlikeli bölge</h2>
+    <div class="dz"><div><b>Önceki OTA sürümüne dön</b><p>Aktif olmayan OTA bölümünü seçip yeniden başlatır.</p></div><button class="th" onclick="runBootPrev()">Önceki sürüme dön</button></div>
+    <div class="dz"><div><b>Fabrika yazılımına dön</b><p>USB ile yüklenen kurtarma (factory) sürümünü açar.</p></div><button class="thd" onclick="runBootFactory()">Fabrikaya dön</button></div>
+    <div class="dz"><div><b>Şarj verilerini sıfırla</b><p>Seçilen veriler kalıcı olarak silinir.</p>
+      <div class="satir"><label class="ck"><input type="checkbox" id="rstOptNow" checked>Anlık sayaç</label><label class="ck"><input type="checkbox" id="rstOptHist" checked>Seans geçmişi</label></div></div>
+      <button class="thd" onclick="runDataReset()">Verileri sıfırla</button></div>
+  </div>
+</div>
+</section>
+</main></div></div>
+
+<div class="ov" id="ov" hidden><div class="dlg" id="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgT"><h3 id="dlgT"></h3><p id="dlgM"></p>
+<div id="dlgW"><label for="dlgI">Onay için <b id="dlgK"></b> yazın</label><input id="dlgI" autocomplete="off" autocapitalize="characters"></div>
+<div class="satir"><button class="ik" onclick="ask.close()">Vazgeç</button><button id="dlgOk">Onayla</button></div></div></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script>
-const PAGE_MODE="__PAGE_MODE__";
-let paused = false;
-let t;
+/* Yetkili uc noktalar: /status /history /charge_cmd /calib_apply /wifi_scan /wifi_apply
+   /ota_check /ota_install /boot_prev /boot_factory /relay /relay_auto /pulse_reset /pulse_set
+   /data_reset /api/logout /api/password /api/upload_ticket /api/cloud_cfg /api/schedule -> hepsi "Authorization: Bearer <jeton>" ister, yoksa 401.
+   Acik: /api/login (POST JSON {user,password} -> {token,ttl,mustChange}; hatada 401 {left}, kilitte 429 {retryAfter}). */
+const PAGE_MODE="__PAGE_MODE__",IDLE_MS=15*60e3,MAX_TRY=5,LOCK_S=60;
+let TOK=null,paused=false,t,last=null,calDirty=false,wifiDirty=false,fails=0,lastAct=Date.now(),idleWarned=false,tries=0,lockUntil=0,pollT=null,idleT=null;
+const $=id=>document.getElementById(id);
+/* Form alanlari data-f tanimindan uretilir: "id|Etiket|birim|ornek;..." (id'ler aynen korunur) */
+document.querySelectorAll('[data-f]').forEach(b=>{b.innerHTML=b.dataset.f.split(';').map(x=>{const[id,l,u,ph]=x.split('|'),i='<input id="'+id+'" inputmode="decimal"'+(ph?' placeholder="'+ph+'"':'')+'>';return'<div><label for="'+id+'">'+l+'</label>'+(u?'<div class="u">'+i+'<em>'+u+'</em></div>':i)+'</div>';}).join('')+b.innerHTML;});
+Object.assign($('limitASet'),{type:'number',min:6,max:32,step:1});
+function T(id,v){const e=$(id);if(e)e.textContent=v;}
+function num(v,f=0){const n=Number(v);return Number.isFinite(n)?n:f;}
+function toast(m){const e=$('toast');e.textContent=m;e.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('on'),2800);}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function p(){paused=true;clearTimeout(t);}
+function r(){clearTimeout(t);t=setTimeout(()=>{paused=false;},3000);}
+document.addEventListener('focusin',e=>{if(/INPUT|SELECT/.test(e.target.tagName))p();});
+document.addEventListener('focusout',e=>{if(/INPUT|SELECT/.test(e.target.tagName))r();});
+function togglePw(id,b){const e=$(id);e.type=e.type==='password'?'text':'password';if(b)b.textContent=e.type==='password'?'Göster':'Gizle';}
 
-function p(){ paused = true; clearTimeout(t); }
-function r(){ t = setTimeout(() => { paused = false; }, 3000); }
-function send(path){ fetch(path).then(() => pull(false)); }
-function num(v, fallback = 0){
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-function setInput(id, value, force){
-  const el = document.getElementById(id);
-  if(!el) return;
-  if(el.type === 'checkbox'){
-    if(document.activeElement !== el || force) el.checked = !!value;
-    return;
-  }
-  if(el && (document.activeElement !== el || force)) el.value = value;
-}
-function fmtTime(sec){
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
-}
-function fmtOtaAge(ms){
-  const sec = Math.max(0, Math.round((Number(ms) || 0) / 1000));
-  if(sec === 0) return "hemen simdi";
-  if(sec < 60) return sec + " sn once";
-  const min = Math.floor(sec / 60);
-  const rem = sec % 60;
-  return min + " dk " + rem + " sn once";
-}
-function compareVersions(a,b){
-  const pa=String(a||"").split(".").map(x=>parseInt(x,10)||0);
-  const pb=String(b||"").split(".").map(x=>parseInt(x,10)||0);
-  const len=Math.max(pa.length,pb.length,4);
-  for(let i=0;i<len;i++){
-    const av=pa[i]||0;
-    const bv=pb[i]||0;
-    if(av>bv) return 1;
-    if(av<bv) return -1;
-  }
-  return 0;
-}
-function updateOtaInstallButton(d){
-  const btn=document.getElementById('otaInstallBtn');
-  if(!btn) return;
-  const hasUpdate=compareVersions(d.otaRemote,d.otaCur)>0;
-  btn.disabled=!hasUpdate;
-  btn.textContent=hasUpdate?'GUNCELLEMEYI YUKLE':'GUNCEL';
-}
-function toggleWifiModeFields(){
-  const wrap=document.getElementById('wifiStaticFields');
-  const isStatic=(document.getElementById('wifiModeCfg').value==='static');
-  if(wrap) wrap.style.display=isStatic?'block':'none';
-}
-function applyWifiStatus(d){
-  setInput('wifiEnabled', !!d.wifiCfgEnabled, true);
-  setInput('wifiSsidCfg', d.wifiCfgSsid || '', true);
-  setInput('wifiPassCfg', '', true);
-  setInput('wifiModeCfg', d.wifiCfgMode || 'dhcp', true);
-  setInput('wifiIpCfg', d.wifiCfgIp || '', true);
-  setInput('wifiGwCfg', d.wifiCfgGw || '', true);
-  setInput('wifiSubnetCfg', d.wifiCfgSubnet || '', true);
-  setInput('wifiDns1Cfg', d.wifiCfgDns1 || '', true);
-  setInput('wifiDns2Cfg', d.wifiCfgDns2 || '', true);
-  toggleWifiModeFields();
-  const modeLine=document.getElementById('wifiCurrentMode');
-  if(modeLine){
-    modeLine.textContent = d.wifiCfgEnabled
-      ? ('Baglanti profili: ' + (d.wifiCfgSsid || '-') + ' / ' + ((d.wifiCfgMode || 'dhcp').toUpperCase()))
-      : 'Baglanti profili: varsayilan liste';
-  }
-  const connectedLine=document.getElementById('wifiConnectedInfo');
-  if(connectedLine){
-    connectedLine.textContent = (d.wifiSsid && d.wifiSsid !== '-')
-      ? ('Mevcut baglanti: ' + d.wifiSsid + ((d.wifiLoc && d.wifiLoc !== '-') ? (' / ' + d.wifiLoc) : ''))
-      : 'Mevcut baglanti: bagli degil';
-  }
-}
-function showSection(id, visible){
-  const el=document.getElementById(id);
-  if(el) el.style.display=visible?'block':'none';
-}
-function setActiveNav(id){
-  ['navAdmin','navCalibration','navWifi'].forEach((navId)=>{
-    const el=document.getElementById(navId);
-    if(el) el.classList.toggle('active', navId===id);
-  });
-}
-function applyPageMode(){
-  const mode=PAGE_MODE || 'admin';
-  showSection('liveCard', mode==='admin');
-  showSection('statusCard', mode==='admin');
-  showSection('calibrationCard', mode==='calibration');
-  showSection('wifiCard', mode==='wifi');
-  showSection('testCard', mode==='calibration');
-  showSection('otaCard', mode==='wifi');
-  if(mode==='wifi'){
-    setActiveNav('navWifi');
-  }else if(mode==='calibration'){
-    setActiveNav('navCalibration');
-  }else{
-    setActiveNav('navAdmin');
-  }
-}
-function renderWifiScanList(items){
-  const host=document.getElementById('wifiScanList');
-  if(!host) return;
-  if(!items || !items.length){
-    host.innerHTML='Tarama sonucu bos';
-    return;
-  }
-  host.innerHTML=items.map((item)=>{
-    const ssid=String(item.ssid||'').replace(/[&<>"]/g,(ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch]));
-    return '<div style="display:flex;justify-content:space-between;gap:8px;margin:6px 0;padding:8px;border:1px solid #20304a;border-radius:10px;">'+
-      '<span>'+ssid+'</span><span>'+String(item.rssi||0)+' dBm</span><button type="button" onclick="pickWifiSsid('+JSON.stringify(String(item.ssid||''))+')">Sec</button></div>';
-  }).join('');
-}
-function pickWifiSsid(ssid){
-  const el=document.getElementById('wifiSsidCfg');
-  if(el) el.value=ssid;
-}
-function scanWifiList(){
-  const status=document.getElementById('wifiScanStatus');
-  if(status) status.textContent='Tarama yapiliyor...';
-  fetch('/wifi_scan', {cache:'no-store'})
-    .then(r=>r.json())
-    .then(d=>{
-      renderWifiScanList(d.items||[]);
-      if(status) status.textContent='Tarama tamamlandi';
-    })
-    .catch(()=>{
-      if(status) status.textContent='Tarama basarisiz';
-    });
-}
-function applyWifiSettings(){
-  const q=new URLSearchParams();
-  q.append('wifiEnabled', document.getElementById('wifiEnabled').checked ? '1' : '0');
-  q.append('wifiSsid', document.getElementById('wifiSsidCfg').value);
-  q.append('wifiPass', document.getElementById('wifiPassCfg').value);
-  q.append('wifiDhcp', document.getElementById('wifiModeCfg').value === 'static' ? '0' : '1');
-  q.append('wifiIp', document.getElementById('wifiIpCfg').value);
-  q.append('wifiGw', document.getElementById('wifiGwCfg').value);
-  q.append('wifiSubnet', document.getElementById('wifiSubnetCfg').value);
-  q.append('wifiDns1', document.getElementById('wifiDns1Cfg').value);
-  q.append('wifiDns2', document.getElementById('wifiDns2Cfg').value);
-  fetch('/wifi_apply?' + q.toString(), {cache:'no-store'})
-    .then(r=>r.json())
-    .then(()=>{
-      alert('Wi-Fi ayarlari kaydedildi. Cihaz yeniden baglanmaya calisiyor.');
-      paused=false;
-      pull(true);
-    })
-    .catch(()=>alert('Wi-Fi ayarlari kaydedilemedi'));
-}
-function applyUserCss(){
-  const q=new URLSearchParams();
-  q.append('userCss', document.getElementById('userCssSet').value);
-  if(document.activeElement) document.activeElement.blur();
-  fetch('/calib_apply?' + q.toString())
-    .then(() => {
-      alert('Kullanici ekrani CSS kaydedildi');
-      paused=false;
-      pull(true);
-    })
-    .catch(() => alert('Kullanici ekrani CSS kaydedilemedi'));
-}
-function runOtaCheckAdmin(){
-  fetch('/ota_check', {cache:'no-store'}).then(() => {
-    document.getElementById('otaStatus').textContent = 'check_requested';
-  });
-}
-function runOtaInstall(){
-  const cur=document.getElementById('otaCurVer').textContent||'-';
-  const remote=document.getElementById('otaRemoteVer').textContent||'-';
-  if(compareVersions(remote,cur)<=0){
-    alert('Yuklenecek yeni OTA surumu bulunmuyor.');
-    return;
-  }
-  if(!confirm('Yeni OTA surumu yüklensin ve cihaz yeniden başlatılsın mı?')) return;
-  fetch('/ota_install', {cache:'no-store'})
-    .then(r => r.json())
-    .then(() => {
-      document.getElementById('otaStatus').textContent='install_requested';
-      document.getElementById('otaError').textContent='Admin onayi verildi, OTA yukleme baslatiliyor';
-    })
-    .catch(() => alert('OTA yukleme istegi gonderilemedi'));
-}
-function runBootFactory(){
-  if(!confirm('Factory surume donup cihaz yeniden baslatilsin mi?')) return;
-  fetch('/boot_factory', {cache:'no-store'})
-    .then(r => r.text().then(t => ({ok:r.ok, text:t})))
-    .then(x => {
-      if(!x.ok) throw new Error(x.text || 'Factory gecisi basarisiz');
-      alert(x.text || 'Factory secildi, cihaz yeniden baslatiliyor.');
-    })
-    .catch(e => alert(e.message || 'Factory gecisi basarisiz'));
-}
-function runBootPrev(){
-  if(!confirm('Aktif olmayan OTA slotu secilip cihaz yeniden baslatilsin mi?')) return;
-  fetch('/boot_prev', {cache:'no-store'})
-    .then(r => r.text().then(t => ({ok:r.ok, text:t})))
-    .then(x => {
-      if(!x.ok) throw new Error(x.text || 'Onceki OTA gecisi basarisiz');
-      alert(x.text || 'Diger OTA slotu secildi, cihaz yeniden baslatiliyor.');
-    })
-    .catch(e => alert(e.message || 'Onceki OTA gecisi basarisiz'));
-}
-function fillClampLow(){
-  let changed = 0;
-  ['A','B','C'].forEach(ph => {
-    const ref = num(document.getElementById('clampLow' + ph).value, 0);
-    const live = num(document.getElementById('liveI' + ph).textContent, 0);
-    const currentCal = num(document.getElementById('ical' + ph).value, 12);
-    if(ref > 0 && live > 0.2){
-      document.getElementById('ical' + ph).value = (currentCal * (ref / live)).toFixed(2);
-      changed++;
-    }
-  });
-  if(!changed){
-    alert('Pens A/B/C referanslarindan en az birini gir ve canli akim gelsin.');
-    return;
-  }
-  alert('Ical A/B/C alanlari pens faz degerlerine gore dolduruldu.');
-}
-function fillClampMid(){
-  let changed = 0;
-  ['A','B','C'].forEach(ph => {
-    const ref = num(document.getElementById('clampMid' + ph).value, 0);
-    const live = num(document.getElementById('liveI' + ph).textContent, 0);
-    if(ref > 0 && live > 0){
-      document.getElementById('ioff' + ph).value = (ref - live).toFixed(2);
-      changed++;
-    }
-  });
-  if(!changed){
-    alert('Pens A/B/C referanslarindan en az birini gir ve canli akim gelsin.');
-    return;
-  }
-  alert('Offset A/B/C alanlari pens faz degerlerine gore dolduruldu.');
-}
-function fetchLogs(){
-  fetch('/logs', {cache:'no-store'}).then(r=>r.text()).then(t=>{
-    const el=document.getElementById('logBox');
-    if(el) el.textContent = t && t.length ? t : '(bos)';
-  }).catch(()=>{});
-}
-function pull(force=false){
-  if(paused && !force) return;
-  fetch('/status', {cache:'no-store'}).then(r => r.json()).then(d => {
-    document.getElementById('sStb').textContent = d.state;
-    document.getElementById('sRaw').textContent = d.stateRaw;
-    document.getElementById('cH').textContent = num(d.cpHigh).toFixed(2) + 'V';
-    document.getElementById('cL').textContent = num(d.cpLow).toFixed(2) + 'V';
-    document.getElementById('aH').textContent = num(d.adcHigh).toFixed(3) + 'V';
-    document.getElementById('aL').textContent = num(d.adcLow).toFixed(3) + 'V';
-    document.getElementById('ppV').textContent = num(d.ppVolt).toFixed(3) + 'V';
-    document.getElementById('ppRaw').textContent = String(num(d.ppRaw, 0));
-    document.getElementById('i1').textContent = num(d.ia).toFixed(2);
-    document.getElementById('i2').textContent = num(d.ib).toFixed(2);
-    document.getElementById('i3').textContent = num(d.ic).toFixed(2);
-    document.getElementById('pwr').textContent = (num(d.pW) / 1000.0).toFixed(2);
-    document.getElementById('ekwh').textContent = num(d.eKWh).toFixed(3);
-    document.getElementById('tsec').textContent = fmtTime(num(d.tSec, 0));
-    document.getElementById('phase').textContent = num(d.phase, 1) + 'F';
-    document.getElementById('wifiSsid').textContent = d.wifiSsid || '-';
-    document.getElementById('wifiLoc').textContent = d.wifiLoc || '-';
-    document.getElementById('ip').textContent = d.ip || '-';
-    document.getElementById('host').textContent = d.host || '-';
-    document.getElementById('rLbl').textContent = d.rLbl || '-';
-    document.getElementById('stationAddr').textContent = d.stationAddr || '-';
-    document.getElementById('rstTotal').textContent = d.rstTotal || 0;
-    document.getElementById('rstNow').textContent = d.rstNow || 0;
-    document.getElementById('rstHist').textContent = d.rstHist || 0;
-    document.getElementById('rstLastMode').textContent = d.rstLastMode || 'YOK';
-    document.getElementById('rstLastSec').textContent = d.rstLastSec || 0;
-    document.getElementById('otaCurVer').textContent = d.otaCur || '-';
-    document.getElementById('otaRemoteVer').textContent = d.otaRemote || '-';
-    document.getElementById('otaPart').textContent = d.otaPart || '-';
-    document.getElementById('otaImgState').textContent = d.otaImgState || '-';
-    document.getElementById('otaStatus').textContent = d.otaStatus || '-';
-    document.getElementById('otaAge').textContent = fmtOtaAge(d.otaAgeMs);
-    document.getElementById('otaError').textContent = (d.otaErr && d.otaErr.length) ? d.otaErr : 'Hata yok';
-    updateOtaInstallButton(d);
-    applyWifiStatus(d);
-    document.getElementById('badgeState').textContent = 'STATE:' + (d.state || '-');
-    const relayBadge = document.getElementById('badgeRelay');
-    relayBadge.textContent = 'R: ' + (d.rLbl || '-');
-    relayBadge.style.backgroundColor = (d.state === 'C') ? 'rgba(0,255,170,0.3)' : '';
+/* --- Jeton deposu: sessionStorage, olmazsa bellek (WebView uyumu) --- */
+const SS={get(k){try{return sessionStorage.getItem(k);}catch(e){return null;}},set(k,v){try{v==null?sessionStorage.removeItem(k):sessionStorage.setItem(k,v);}catch(e){}}};
 
-    document.getElementById('liveIa').textContent = num(d.ia).toFixed(2);
-    document.getElementById('liveIb').textContent = num(d.ib).toFixed(2);
-    document.getElementById('liveIc').textContent = num(d.ic).toFixed(2);
-    document.getElementById('liveIAvg').textContent = num(d.iAvg).toFixed(2);
 
-    setInput('lInt', d.lInt, force);
-    setInput('onD', d.onD, force);
-    setInput('offD', d.offD, force);
-    setInput('stb', d.stable, force);
-    setInput('limitASet', (d.limitTargetA !== undefined) ? d.limitTargetA : d.limitA, force);
-    setInput('div', d.div, force);
-    setInput('thb', d.thb, force);
-    setInput('thc', d.thc, force);
-    setInput('thd', d.thd, force);
-    setInput('the', d.the, force);
-    setInput('icalA', d.icalA, force);
-    setInput('icalB', d.icalB, force);
-    setInput('icalC', d.icalC, force);
-    setInput('ioffA', d.ioffA, force);
-    setInput('ioffB', d.ioffB, force);
-    setInput('ioffC', d.ioffC, force);
-    setInput('rngLowMax', d.rngLowMax, force);
-    setInput('rngMidMax', d.rngMidMax, force);
-    setInput('rngLowOff', d.rngLowOff, force);
-    setInput('rngMidOff', d.rngMidOff, force);
-    setInput('stationNameSet', d.stationName || '', force);
-    setInput('mapLat', d.mapLat, force);
-    setInput('mapLng', d.mapLng, force);
-  });
+/* --- Yetkili istek katmani --- */
+function api(u,o={}){
+  o.cache='no-store';o.headers=Object.assign({},o.headers,{Authorization:'Bearer '+TOK});
+  return fetch(u,o).then(x=>{if(x.status===401){logout('Oturum sona erdi, tekrar giriş yapın.',true);throw new Error('Yetkisiz');}net(true);return x;},e=>{net(false);throw e;});
 }
-function applyCal(){
-  const q = new URLSearchParams();
-  q.append('lInt', document.getElementById('lInt').value);
-  q.append('onD', document.getElementById('onD').value);
-  q.append('offD', document.getElementById('offD').value);
-  q.append('s', document.getElementById('stb').value);
-  q.append('limitA', document.getElementById('limitASet').value);
-  q.append('div', document.getElementById('div').value);
-  q.append('thb', document.getElementById('thb').value);
-  q.append('thc', document.getElementById('thc').value);
-  q.append('thd', document.getElementById('thd').value);
-  q.append('the', document.getElementById('the').value);
-  q.append('icalA', document.getElementById('icalA').value);
-  q.append('icalB', document.getElementById('icalB').value);
-  q.append('icalC', document.getElementById('icalC').value);
-  q.append('ioffA', document.getElementById('ioffA').value);
-  q.append('ioffB', document.getElementById('ioffB').value);
-  q.append('ioffC', document.getElementById('ioffC').value);
-  q.append('rngLowMax', document.getElementById('rngLowMax').value);
-  q.append('rngMidMax', document.getElementById('rngMidMax').value);
-  q.append('rngLowOff', document.getElementById('rngLowOff').value);
-  q.append('rngMidOff', document.getElementById('rngMidOff').value);
-  q.append('stationName', document.getElementById('stationNameSet').value);
-  q.append('mapLat', document.getElementById('mapLat').value);
-  q.append('mapLng', document.getElementById('mapLng').value);
-  q.append('userCss', document.getElementById('userCssSet').value);
-  if(document.activeElement) document.activeElement.blur();
-  fetch('/calib_apply?' + q.toString()).then(() => {
-    alert('Tamam');
-    paused = false;
-    pull(true);
-  });
+function getJSON(u){return api(u).then(x=>{if(!x.ok)throw new Error('HTTP '+x.status);return x.json();});}
+function call(u,o){return api(u,o).then(x=>x.text().then(s=>{if(!x.ok)throw new Error(s||('HTTP '+x.status));return s;}));}
+function send(u){call(u).then(()=>{toast('Komut gönderildi');pull(true);}).catch(e=>toast(e.message||'İstek başarısız'));}
+function fetchLogs(){call('/logs').then(t=>{const e=$('logBox');if(e){e.hidden=false;e.textContent=t&&t.length?t:'(bos)';}}).catch(e=>toast(e.message||'Log alinamadi'));}
+
+/* --- Baglanti seridi --- */
+function strip(cls,msg){const s=$('netStrip');s.className=cls;s.textContent=msg;s.hidden=!msg;}
+function net(ok){
+  if(ok){if(fails){strip('iyi','Bağlantı yeniden kuruldu');setTimeout(()=>{if(!fails)strip('', '');},2500);}fails=0;}
+  else{fails++;strip('kotu','Cihaza ulaşılamıyor · yeniden bağlanıyor… ('+fails+')');}
 }
-applyPageMode();
-setInterval(() => pull(false), 3000);
-setInterval(() => { if((PAGE_MODE||'admin')==='admin') fetchLogs(); }, 4000);
-pull(true);
-fetchLogs();
+addEventListener('offline',()=>strip('kotu','Telefonun ağ bağlantısı yok'));
+addEventListener('online',()=>{strip('uyari','Ağ geri geldi, yenileniyor…');pull(true);});
+
+/* --- Giris / cikis --- */
+function lgMsg(cls,m){const e=$('lgMsg');e.className='mesaj '+cls;e.textContent=m;e.hidden=!m;}
+function lockTick(){const s=Math.ceil((lockUntil-Date.now())/1000),b=$('lgBtn');
+  if(s>0){b.disabled=true;b.textContent='Kilitli · '+s+' sn';lgMsg('kotu','Çok fazla hatalı deneme. '+s+' sn sonra tekrar deneyin.');setTimeout(lockTick,1000);}
+  else{b.disabled=false;b.textContent='Giriş';tries=0;lgMsg('','');SS.set('evseLock',null);}}
+function lock(sec){lockUntil=Date.now()+sec*1000;SS.set('evseLock',String(lockUntil));lockTick();}
+function loginFail(left){tries++;const k=left!=null?left:MAX_TRY-tries;if(k<=0){lock(LOCK_S);return;}
+  lgMsg(k<=2?'kotu':'uyari','Parola hatalı. Kalan deneme: '+k+(k<=2?' — sonra '+LOCK_S+' sn kilitlenir.':''));$('lgPass').select();}
+$('loginForm').addEventListener('submit',e=>{
+  e.preventDefault();if(lockUntil>Date.now())return;
+  const pw=$('lgPass').value,b=$('lgBtn');b.disabled=true;b.textContent='Kontrol ediliyor…';
+  const done=()=>{if(lockUntil<=Date.now()){b.disabled=false;b.textContent='Giriş';}};
+  fetch('/api/login',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:'admin',password:pw})})
+  .then(x=>x.json().catch(()=>({})).then(j=>{done();
+    if(x.ok&&j.token)startSession(j.token,j.mustChange);
+    else if(x.status===429)lock(num(j.retryAfter,LOCK_S));
+    else if(x.status===401)loginFail(j.left);
+    else lgMsg('kotu','Giriş yapılamadı (HTTP '+x.status+').');}))
+  .catch(()=>{done();lgMsg('kotu','Cihaza ulaşılamadı. Ağ bağlantısını kontrol edip tekrar deneyin.');});
+});
+function pwBand(on){$('pwWarn').hidden=!on;}
+function startSession(tok,mustChange){
+  TOK=tok;SS.set('evseTok',tok);tries=0;$('lgPass').value='';lgMsg('','');
+  $('loginView').hidden=true;$('appView').hidden=false;lastAct=Date.now();idleWarned=false;
+  pwBand(!!mustChange);
+  applyPageMode();pull(true);
+  clearInterval(pollT);pollT=setInterval(()=>{if(!document.hidden)pull(false);},3000);
+  clearInterval(idleT);idleT=setInterval(idleCheck,1000);
+}
+function logout(msg,expired){
+  if(TOK&&!expired)fetch('/api/logout',{method:'POST',headers:{Authorization:'Bearer '+TOK}}).catch(()=>{});
+  TOK=null;SS.set('evseTok',null);clearInterval(pollT);clearInterval(idleT);ask.close();
+  ['wifiPassCfg','pwCur','pwNew','pwNew2','lgPass'].forEach(i=>$(i).value='');
+  $('appView').hidden=true;$('loginView').hidden=false;strip('','');fails=0;
+  lgMsg(msg?'uyari':'',msg||'');setTimeout(()=>$('lgPass').focus(),50);
+}
+['pointerdown','keydown','touchstart'].forEach(ev=>addEventListener(ev,()=>{lastAct=Date.now();idleWarned=false;},{passive:true}));
+function idleCheck(){if(!TOK)return;const left=IDLE_MS-(Date.now()-lastAct);
+  if(left<=0){logout('15 dakika işlem yapılmadığı için çıkış yapıldı.');return;}
+  if(left<60e3&&!idleWarned){idleWarned=true;toast('1 dakika içinde otomatik çıkış yapılacak');}
+  T('idleLeft',fmtTime(left/1000));}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&TOK){idleCheck();if(TOK)pull(true);}});
+
+/* --- Onay diyalogu --- */
+const up=s=>s.trim().toLocaleUpperCase('tr').replace(/İ/g,'I');
+const ask={open(o){T('dlgT',o.t);T('dlgM',o.m);$('dlg').className='dlg'+(o.red?' red':'');$('dlgW').hidden=!o.w;T('dlgK',o.w||'');$('dlgI').value='';
+  const ok=$('dlgOk');ok.className=o.red?'thd':'';ok.textContent=o.ok||'Onayla';
+  ok.onclick=()=>{if(o.w&&up($('dlgI').value)!==up(o.w)){toast('Onay kelimesi hatalı');return;}ask.close();o.go();};
+  $('ov').hidden=false;if(o.w)setTimeout(()=>$('dlgI').focus(),50);},close(){$('ov').hidden=true;}};
+$('ov').addEventListener('click',e=>{if(e.target.id==='ov')ask.close();});
+
+/* --- Gezinme --- */
+const SECS=['liveCard','statusCard','calibrationCard','wifiCard','testCard','otaCard'];
+const HASH={live:'liveCard',admin:'liveCard',status:'statusCard',settings:'calibrationCard',calibration:'calibrationCard',wifi:'wifiCard',test:'testCard',ota:'otaCard'};
+function showPage(id){SECS.forEach(s=>$(s).classList.toggle('on',s===id));
+  document.querySelectorAll('a.nav').forEach(a=>a.classList.toggle('active',a.dataset.s===id||(id==='testCard'&&a.id==='navCalibration')));
+  if(id==='statusCard')loadHistory();scrollTo(0,0);}
+function applyPageMode(){const m=PAGE_MODE.indexOf('__')===0?'admin':PAGE_MODE;showPage(HASH[location.hash.slice(1)]||HASH[m]||'liveCard');}
+addEventListener('hashchange',()=>{if(TOK)applyPageMode();});
+function refreshAll(){const b=$('refreshBtn');b.classList.add('spin');pull(true);if($('statusCard').classList.contains('on'))loadHistory();setTimeout(()=>b.classList.remove('spin'),800);}
+function copyIp(){const ip=$('ipTop').textContent;if(navigator.clipboard&&ip!=='-')navigator.clipboard.writeText(ip).then(()=>toast('IP kopyalandı: '+ip),()=>{});}
+
+/* --- Bicimleyiciler --- */
+const ST={A:'Araç bağlı değil',B:'Araç bağlı, hazır',C:'Şarj oluyor',D:'Şarj (havalandırma)',E:'Hata: CP kısa devre',F:'Hata: EVSE arızası'};
+function fmtTime(s){s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),z=n=>String(n).padStart(2,'0');return(h?h+':':'')+z(Math.floor(s%3600/60))+':'+z(s%60);}
+function fmtOtaAge(ms){const s=Math.round(num(ms)/1000);return!s?'hemen şimdi':s<60?s+' sn önce':Math.floor(s/60)+' dk '+(s%60)+' sn önce';}
+function fmtDate(s){if(s<1e9)return s+' s';const d=new Date(s*1000);return d.toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}
+function compareVersions(a,b){const pa=String(a||'').split('.').map(x=>parseInt(x,10)||0),pb=String(b||'').split('.').map(x=>parseInt(x,10)||0);for(let i=0;i<Math.max(pa.length,pb.length,4);i++){const x=pa[i]||0,y=pb[i]||0;if(x!==y)return x>y?1:-1;}return 0;}
+function setInput(id,v,force){const e=$(id);if(!e||v===undefined)return;if(document.activeElement===e&&!force)return;if(e.type==='checkbox')e.checked=!!v;else e.value=v;}
+
+/* --- Canli veri --- */
+const CAL=[['lInt','lInt'],['onD','onD'],['offD','offD'],['stb','stable'],['div','div'],['thb','thb'],['thc','thc'],['thd','thd'],['the','the'],['icalA','icalA'],['icalB','icalB'],['icalC','icalC'],['ioffA','ioffA'],['ioffB','ioffB'],['ioffC','ioffC'],['rngLowMax','rngLowMax'],['rngMidMax','rngMidMax'],['rngLowOff','rngLowOff'],['rngMidOff','rngMidOff'],['mapLat','mapLat'],['mapLng','mapLng']];
+function render(d,force){
+  last=d;const st=d.state||'-',lim=num(d.limitA,16)||16,ph=num(d.phase,1),kw=num(d.pW)/1000,kwMax=lim*230*ph/1000;
+  T('stationTitle',d.stationName||'RTevCharge');T('ipTop',d.ip||'-');T('hostTop',d.host||'-');T('lastUpd',new Date().toLocaleTimeString('tr-TR'));const ct=$('connTag');ct.className='s rozet '+(d.staOk?'iyi':'kotu');ct.textContent=d.staOk?'Wi-Fi bağlı':'Wi-Fi yok';
+  const sb=$('stBox');sb.textContent=st;sb.className='stL '+st;T('stTxt',ST[st]||'Bilinmiyor');
+  T('badgeState','STATE:'+st);T('sRawTop',d.stateRaw||'-');T('modeTxt',d.mode||'-');T('badgeRelay','R: '+(d.rLbl||'-'));
+  document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('on',+b.dataset.m===num(d.modeId)));
+  const al=$('alarmBox');al.hidden=!(d.alarmLv>0);al.className='alarm l'+d.alarmLv;al.textContent=d.alarmTxt||'';
+  T('sStb',st);T('sRaw',d.stateRaw);T('cH',num(d.cpHigh).toFixed(2)+'V');T('cL',num(d.cpLow).toFixed(2)+'V');T('aH',num(d.adcHigh).toFixed(3)+'V');T('aL',num(d.adcLow).toFixed(3)+'V');T('ppV',num(d.ppVolt).toFixed(3)+'V');T('ppRaw',String(num(d.ppRaw,0)));
+  [['i1',d.ia,'b1'],['i2',d.ib,'b2'],['i3',d.ic,'b3']].forEach(a=>{const v=num(a[1]),b=$(a[2]);T(a[0],v.toFixed(2));b.style.width=Math.min(100,v/lim*100)+'%';b.style.background=v>lim+1?'var(--kotu)':'';});
+  T('pwr',kw.toFixed(2));T('pMax',kwMax.toFixed(1));$('pBar').style.width=Math.min(100,kw/kwMax*100)+'%';
+  T('ekwh',num(d.eKWh).toFixed(3));T('sLiveKWh',d.sLive?num(d.sLiveKWh).toFixed(3):'-');T('tsec',fmtTime(num(d.tSec)));T('phase',ph+'F');T('limitTxt',lim.toFixed(0));T('iAvgTag','ORT '+num(d.iAvg).toFixed(2)+' A');
+  T('rLbl',d.rLbl||'-');const rt=$('relayTag');rt.textContent=d.rLbl||'-';rt.className='s rozet '+(d.rLbl==='SET'?'iyi':'');
+  T('wifiSsid',d.wifiSsid||'-');T('wifiLoc',d.wifiLoc||'-');T('ip',d.ip||'-');T('host',d.host||'-');T('mac',d.mac||'-');T('stationCode',d.stationCode||'-');T('stationAddr',d.stationAddr||'-');T('stationAddr2',d.stationAddr||'-');
+  T('rstTotal',d.rstTotal||0);T('rstNow',d.rstNow||0);T('rstHist',d.rstHist||0);T('rstLastMode',d.rstLastMode||'YOK');T('rstLastSec',d.rstLastSec||0);
+  T('liveIa',num(d.ia).toFixed(2));T('liveIb',num(d.ib).toFixed(2));T('liveIc',num(d.ic).toFixed(2));T('liveIAvg',num(d.iAvg).toFixed(2));
+  renderOta(d);if(d.pwMustChange!==undefined)pwBand(!!d.pwMustChange);renderCloud(d.cloud);renderSched(d.sched);
+  if(!calDirty||force){CAL.forEach(a=>setInput(a[0],d[a[1]],force));setInput('limitASet',d.limitTargetA!==undefined?d.limitTargetA:d.limitA,force);setInput('stationNameSet',d.stationName||'',force);}
+  if(!wifiDirty||force)applyWifiStatus(d);
+  if(force){calDirty=false;wifiDirty=false;markCal();}
+}
+function pull(force=false){if(!TOK||(paused&&!force))return;getJSON('/status').then(d=>{if(TOK)render(d,force);}).catch(()=>{});}
+
+/* --- OTA ve tehlikeli islemler --- */
+function renderOta(d){T('otaCurVer',d.otaCur||'-');T('otaRemoteVer',d.otaRemote||'-');T('fwSmall',d.otaCur||'-');T('otaPart',d.otaPart||'-');T('otaImgState',d.otaImgState||'-');T('otaStatus',d.otaStatus||'-');T('otaAge',fmtOtaAge(d.otaAgeMs));T('otaError',d.otaErr?d.otaErr:'Hata yok');updateOtaInstallButton(d);}
+function updateOtaInstallButton(d){const has=compareVersions(d.otaRemote,d.otaCur)>0,er=!!d.otaErr,tg=$('otaTag'),b=$('otaInstallBtn');
+  b.disabled=!has;b.textContent=has?'Güncellemeyi yükle':'Güncel';$('otaRemoteBox').className=has?'yeni':'';
+  tg.className='s rozet '+(er?'kotu':has?'uyari':'iyi');tg.textContent=er?'Hata':has?'Yeni sürüm var':'Güncel';}
+function runOtaCheckAdmin(){call('/ota_check').then(()=>{T('otaStatus','check_requested');toast('Sunucu kontrol ediliyor');setTimeout(()=>pull(true),4000);}).catch(()=>toast('OTA kontrolü gönderilemedi'));}
+function runOtaInstall(){const cur=$('otaCurVer').textContent,rem=$('otaRemoteVer').textContent;
+  if(compareVersions(rem,cur)<=0){toast('Yüklenecek yeni sürüm yok');return;}
+  ask.open({t:'Güncelleme yüklensin mi?',m:cur+' → '+rem+'. Şarj durur, cihaz yeniden başlar; işlem bitene kadar gücü kesmeyin.',ok:'Yükle ve yeniden başlat',go:()=>call('/ota_install').then(()=>{T('otaStatus','install_requested');T('otaError','Admin onayı verildi, yükleme başlıyor');toast('Yükleme başladı');}).catch(()=>toast('OTA yükleme isteği gönderilemedi'))});}
+/* .bin yukleme sayfasi: Bearer ile 60 sn'lik tek kullanimlik bilet alinir, /update?t=... acilir */
+function openUpdate(){api('/api/upload_ticket',{method:'POST'}).then(x=>{if(!x.ok)throw new Error('HTTP '+x.status);return x.json();}).then(j=>{location='/update?t='+encodeURIComponent(j.t);}).catch(()=>toast('Yükleme sayfası açılamadı'));}
+function runBootPrev(){ask.open({t:'Önceki sürüme dönülsün mü?',m:'Aktif olmayan OTA bölümü seçilip cihaz yeniden başlatılacak.',red:1,ok:'Geri dön',go:()=>call('/boot_prev').then(s=>toast(s||'Yeniden başlıyor')).catch(e=>toast(e.message))});}
+function runBootFactory(){ask.open({t:'Fabrika yazılımına dön',m:'Cihaz kurtarma sürümüyle açılacak; sonra OTA ile yeniden güncellemeniz gerekir.',w:'FABRİKA',red:1,ok:'Fabrikaya dön',go:()=>call('/boot_factory').then(s=>toast(s||'Yeniden başlıyor')).catch(e=>toast(e.message))});}
+function runDataReset(){const n=$('rstOptNow').checked,h=$('rstOptHist').checked;if(!n&&!h){toast('En az bir seçenek işaretleyin');return;}
+  ask.open({t:'Veriler silinsin mi?',m:'Silinecek: '+[n&&'anlık sayaç',h&&'seans geçmişi'].filter(Boolean).join(' + ')+'. Geri alınamaz.',w:'SIFIRLA',red:1,ok:'Sil',go:()=>call('/data_reset?now='+(+n)+'&hist='+(+h)).then(()=>{toast('Veriler sıfırlandı');pull(true);loadHistory();}).catch(()=>toast('Sıfırlama başarısız'))});}
+function chargeCmd(m){const go=()=>call('/charge_cmd?m='+m).then(()=>{toast(['Otomatik moda alındı','Şarj başlatıldı','Şarj durduruldu'][m]);pull(true);}).catch(()=>toast('Komut gönderilemedi'));
+  if(m===2)ask.open({t:'Şarj durdurulsun mu?',m:'Röle ve PWM hemen kapatılır.',red:1,ok:'Durdur',go});else go();}
+function loadHistory(){getJSON('/history').then(h=>{const it=(h.items||[]).slice().reverse();$('histBody').innerHTML=it.length?it.map((x,i)=>'<tr><td>'+(i+1)+'</td><td>'+fmtDate(num(x.s))+'</td><td>'+fmtTime(num(x.d))+'</td><td>'+num(x.e).toFixed(2)+' kWh</td><td>'+(num(x.p)/1000).toFixed(1)+' kW</td><td>'+num(x.ph)+'F</td></tr>').join(''):'<tr><td colspan="6">Kayıt yok</td></tr>';}).catch(()=>{});}
+
+/* --- Ayarlar --- */
+function markCal(){const e=$('calDirty');e.textContent=calDirty?'Kaydedilmemiş değişiklik var':'Değişiklik yok';e.className=calDirty?'kirli':'';}
+$('calForm').addEventListener('input',e=>{if(!/^clamp/.test(e.target.id)){calDirty=true;markCal();}});
+function fillClamp(k){let c=0;['A','B','C'].forEach(ph=>{const ref=num($('clamp'+k+ph).value),live=num($('liveI'+ph).textContent);
+  if(k==='Low'&&ref>0&&live>.2){$('ical'+ph).value=(num($('ical'+ph).value,12)*ref/live).toFixed(2);c++;}
+  if(k==='Mid'&&ref>0&&live>0){$('ioff'+ph).value=(ref-live).toFixed(2);c++;}});
+  if(!c){toast('En az bir pens değeri girin ve canlı akım olsun');return;}calDirty=true;markCal();toast(k==='Low'?'Ical alanları dolduruldu':'Offset alanları dolduruldu');}
+function fillClampLow(){fillClamp('Low');}
+function fillClampMid(){fillClamp('Mid');}
+function applyCal(){const q=new URLSearchParams(),F={lInt:'lInt',onD:'onD',offD:'offD',s:'stb',limitA:'limitASet',div:'div',thb:'thb',thc:'thc',thd:'thd',the:'the',icalA:'icalA',icalB:'icalB',icalC:'icalC',ioffA:'ioffA',ioffB:'ioffB',ioffC:'ioffC',rngLowMax:'rngLowMax',rngMidMax:'rngMidMax',rngLowOff:'rngLowOff',rngMidOff:'rngMidOff',stationName:'stationNameSet',mapLat:'mapLat',mapLng:'mapLng'};
+  for(const k in F)q.append(k,$(F[k]).value);const lim=num($('limitASet').value);if(lim<6||lim>32){toast('Akım limiti 6-32 A olmalı');return;}
+  if(document.activeElement)document.activeElement.blur();
+  call('/calib_apply?'+q).then(()=>{toast('Ayarlar uygulandı');calDirty=false;markCal();paused=false;pull(true);}).catch(()=>toast('Ayarlar kaydedilemedi'));}
+$('pwForm').addEventListener('submit',e=>{e.preventDefault();const m=$('pwMsg'),say=(c,s)=>{m.className='mesaj '+c;m.textContent=s;m.hidden=false;},c=$('pwCur').value,n=$('pwNew').value;
+  if(n.length<10)return say('kotu','Yeni parola en az 10 karakter olmalı.');
+  if(n!==$('pwNew2').value)return say('kotu','Yeni parolalar eşleşmiyor.');
+  if(n===c)return say('kotu','Yeni parola mevcut paroladan farklı olmalı.');
+  api('/api/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({current:c,new:n})})
+  .then(x=>x.json().catch(()=>({})).then(j=>{if(!x.ok)return say('kotu',j.error||'Parola değiştirilemedi.');
+    if(j.token){TOK=j.token;SS.set('evseTok',j.token);}pwBand(false);['pwCur','pwNew','pwNew2'].forEach(i=>$(i).value='');say('iyi','Parola değiştirildi. Diğer oturumlar kapatıldı.');}))
+  .catch(()=>say('kotu','Cihaza ulaşılamadı.'));});
+
+/* --- Bulut baglantisi (gizli anahtar asla geri okunmaz; yalnizca ayarli/ayarsiz) --- */
+let cloudDirty=false,schedDirty=false,SCH=null;
+['cloudCode','cloudUrl','cloudSecret','cloudOn'].forEach(i=>$(i).addEventListener('input',()=>{cloudDirty=true;}));
+const CPH={bagli:'Bağlı',hata:'Hata (yeniden deneniyor)',anahtar_reddedildi:'Anahtar reddedildi',wifi_yok:'Wi-Fi yok',saat_bekleniyor:'Saat bekleniyor (NTP)',ayar_yok:'Bulut ayarı yapılmadı',kapali:'Kapalı',baslatiliyor:'Başlatılıyor'};
+function renderCloud(c){if(!c)return;const tg=$('cloudTag');
+  tg.className='s rozet '+(c.ok?'iyi':c.enabled?'kotu':'uyari');tg.textContent=c.ok?'Bağlı':c.enabled?'Kopuk':(c.on?'Ayar yok':'Kapalı');
+  $('cloudWarn').hidden=!(c.on&&!c.secretSet);
+  T('cloudPhase',CPH[c.phase]||c.phase||'-');T('cloudAge',c.ageSec>=0?fmtOtaAge(c.ageSec*1000):'henüz yok');T('cloudHttp',c.lastHttp||'-');
+  T('cloudCmd',c.lastCmdId?('#'+c.lastCmdId+' '+c.lastCmdType+(c.lastCmdOk?' (başarılı)':' (reddedildi)')):'-');T('cloudSecretState',c.secretSet?'Ayarlı':'Ayarsız');
+  const rq=$('cloudReq');rq.checked=!!c.requireCloudStart;rq.disabled=!c.enabled&&!c.requireCloudStart;
+  if(!cloudDirty){setInput('cloudOn',!!c.on,true);setInput('cloudCode',c.code||'',true);setInput('cloudUrl',c.url||'',true);}}
+function cloudPost(b,msg){return api('/api/cloud_cfg',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})
+  .then(x=>x.json().catch(()=>({})).then(j=>{if(!x.ok)throw new Error(j.error||('HTTP '+x.status));toast(msg);renderCloud(j);return j;}));}
+function saveCloud(){const s=$('cloudSecret').value.trim(),code=$('cloudCode').value.trim().toUpperCase(),url=$('cloudUrl').value.trim();
+  if(s&&!/^[A-Za-z0-9_-]{43}$/.test(s)){toast('Gizli anahtar 43 karakter olmalı (A-Z a-z 0-9 _ -)');return;}
+  if(code&&!/^[A-Z0-9_-]{3,16}$/.test(code)){toast('İstasyon kodu 3-16 karakter (A-Z 0-9 _ -)');return;}
+  if(url&&!/^https:\/\//i.test(url)){toast('Sunucu adresi https:// ile başlamalı');return;}
+  const b={on:$('cloudOn').checked,code:code,url:url};if(s)b.secret=s;
+  cloudPost(b,'Bulut ayarı kaydedildi').then(()=>{$('cloudSecret').value='';cloudDirty=false;}).catch(e=>toast(e.message));}
+function clearCloudSecret(){ask.open({t:'Gizli anahtar silinsin mi?',m:'Bulut bağlantısı durur ve "yalnızca uygulamadan başlat" kapanır. Yeniden bağlanmak için sunucudan alınan anahtarı tekrar girmeniz gerekir.',red:1,ok:'Sil',
+  go:()=>cloudPost({clearSecret:true,requireCloudStart:false},'Anahtar silindi').catch(e=>toast(e.message))});}
+function toggleCloudReq(e){e.preventDefault();const on=!(last&&last.cloud&&last.cloud.requireCloudStart);
+  ask.open({t:on?'Şarj yalnızca uygulamadan başlasın mı?':'Uygulama onayı kaldırılsın mı?',
+    m:on?'Araç takılınca şarj kendiliğinden başlamaz; uygulamadan "Başlat" gerekir. Bağlantı yokken yeni şarj başlatılamaz (süren şarj devam eder).':'Araç takılınca şarj mevcut moda göre kendiliğinden başlar.',
+    ok:on?'Aç':'Kapat',go:()=>cloudPost({requireCloudStart:on},on?'Uygulamadan başlatma açıldı':'Uygulamadan başlatma kapatıldı').then(()=>pull(true)).catch(x=>toast(x.message))});return false;}
+
+/* --- Planli sarj (yasakli saat araliklari) --- */
+const DAYS=['Pzt','Sal','Çar','Per','Cum','Cmt','Paz'];
+function schedRowsHtml(){$('schedRows').innerHTML=SCH.windows.length?SCH.windows.map((w,i)=>'<div class="schR"><input type="time" value="'+esc(w.s)+'" aria-label="Başlangıç" onchange="SCH.windows['+i+'].s=this.value;schedDirty=true"><span>–</span><input type="time" value="'+esc(w.e)+'" aria-label="Bitiş" onchange="SCH.windows['+i+'].e=this.value;schedDirty=true"><span class="gun">'+DAYS.map((d,k)=>'<label><input type="checkbox"'+((w.d>>k)&1?' checked':'')+' onchange="schedDay('+i+','+k+',this.checked)">'+d+'</label>').join('')+'</span><button class="th" onclick="schedDel('+i+')">Sil</button></div>').join(''):'<p class="not">Aralık yok</p>';}
+function schedDay(i,k,on){const w=SCH.windows[i];w.d=on?(w.d|(1<<k)):(w.d&~(1<<k));schedDirty=true;}
+function schedAdd(){if(SCH.windows.length>=3){toast('En çok 3 aralık');return;}SCH.windows.push({s:'17:00',e:'22:00',d:127});schedDirty=true;schedRowsHtml();}
+function schedDel(i){SCH.windows.splice(i,1);schedDirty=true;schedRowsHtml();}
+function schedPeak(){SCH.windows=[{s:'17:00',e:'22:00',d:127}];$('schedOn').checked=true;schedDirty=true;schedRowsHtml();toast('Puant aralığı (17:00–22:00, her gün) hazır; Kaydet ile uygulayın');}
+$('schedOn').addEventListener('change',()=>{schedDirty=true;});
+function fmtLeft(s){s=num(s,-1);if(s<0)return'';const h=Math.floor(s/3600),m=Math.ceil(s%3600/60);return h?h+' sa '+m+' dk':m+' dk';}
+function renderSched(s){if(!s)return;const tg=$('schedTag');
+  tg.className='s rozet '+(!s.on?'':!s.timeOk?'uyari':s.blocked?'kotu':'iyi');tg.textContent=!s.on?'Kapalı':!s.timeOk?'Saat yok':s.blocked?'Yasaklı':'Serbest';
+  const left=s.nextChangeInSec>=0?fmtLeft(s.nextChangeInSec):'';
+  T('schedNow',(!s.on?'Zamanlayıcı kapalı: şarj saat kısıtlaması olmadan çalışır.':!s.timeOk?'Cihaz saati henüz alınamadı (NTP); kısıtlama uygulanmıyor.':
+    s.blocked?('Şu an yasaklı aralıkta'+(s.until?' (bitiş '+s.until+(left?', '+left+' sonra':'')+')':'')+'. Bekleyen şarj bitişte otomatik başlar.'):
+    ('Şu an serbest'+(s.until?'; sonraki yasaklı aralık '+s.until+' saatinde başlar':'')+'.'))+(s.now?' Cihaz saati: '+s.now+'.':''));
+  if(!schedDirty||!SCH){SCH={on:!!s.on,windows:(s.windows||[]).map(w=>({s:w.s,e:w.e,d:w.d}))};setInput('schedOn',SCH.on,true);schedRowsHtml();}}
+function schedSave(){if(!SCH)return;const on=$('schedOn').checked,ws=SCH.windows;
+  for(const w of ws){if(!w.s||!w.e){toast('Saatleri doldurun');return;}if(w.s===w.e){toast('Başlangıç ve bitiş aynı olamaz');return;}if(!w.d){toast('Her aralıkta en az bir gün seçin');return;}}
+  if(on&&!ws.length){toast('En az bir aralık ekleyin');return;}
+  const go=()=>api('/api/schedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:on,windows:ws})})
+    .then(x=>x.json().catch(()=>({})).then(j=>{if(!x.ok)throw new Error(j.error||('HTTP '+x.status));schedDirty=false;SCH=null;renderSched(j);toast('Planlı şarj kaydedildi');pull(true);})).catch(e=>toast(e.message));
+  if(on)ask.open({t:'Planlı şarj açılsın mı?',m:'Yasaklı saatlerde şarj güvenle durdurulur, araç bağlıysa aralık bitince kendiliğinden devam eder.',ok:'Kaydet',go});else go();}
+
+/* --- Wi-Fi --- */
+$('wifiCard').addEventListener('input',()=>{wifiDirty=true;});
+function toggleWifiModeFields(){$('wifiStaticFields').hidden=$('wifiModeCfg').value!=='static';}
+function applyWifiStatus(d){setInput('wifiEnabled',!!d.wifiCfgEnabled,true);setInput('wifiSsidCfg',d.wifiCfgSsid||'',true);setInput('wifiModeCfg',d.wifiCfgMode||'dhcp',true);
+  ['Ip','Gw','Subnet','Dns1','Dns2'].forEach(k=>setInput('wifi'+k+'Cfg',d['wifiCfg'+k]||'',true));toggleWifiModeFields();
+  T('wifiCurrentMode',d.wifiCfgEnabled?'Bağlantı profili: '+(d.wifiCfgSsid||'-')+' / '+(d.wifiCfgMode||'dhcp').toUpperCase():'Bağlantı profili: varsayılan liste');
+  T('wifiConnectedInfo',d.wifiSsid&&d.wifiSsid!=='-'?'Mevcut bağlantı: '+d.wifiSsid+(d.wifiLoc&&d.wifiLoc!=='-'?' / '+d.wifiLoc:''):'Mevcut bağlantı: bağlı değil');}
+function bars(r){const n=r>-55?4:r>-67?3:r>-78?2:1;let s='<span class="sig" aria-label="'+n+'/4">';for(let i=1;i<=4;i++)s+='<i class="'+(i<=n?'on':'')+'" style="height:'+(i*3+3)+'px"></i>';return s+'</span>';}
+function renderWifiScanList(items){const h=$('wifiScanList');if(!items||!items.length){h.innerHTML='<p class="not">Tarama sonucu boş</p>';return;}
+  items.sort((a,b)=>b.rssi-a.rssi);h.innerHTML=items.map(it=>'<div class="wi">'+bars(num(it.rssi))+'<span class="n">'+esc(it.ssid||'(gizli)')+'</span><span class="s">'+num(it.rssi)+' dBm</span><button class="ik" type="button" onclick="pickWifiSsid('+esc(JSON.stringify(String(it.ssid||'')))+')">Seç</button></div>').join('');}
+function pickWifiSsid(s){$('wifiSsidCfg').value=s;$('wifiEnabled').checked=true;wifiDirty=true;$('wifiPassCfg').focus();}
+function scanWifiList(){T('wifiScanStatus','Tarama yapılıyor…');getJSON('/wifi_scan').then(d=>{renderWifiScanList(d.items||[]);T('wifiScanStatus','Tarama tamamlandı · '+(d.items||[]).length+' ağ');}).catch(()=>T('wifiScanStatus','Tarama başarısız'));}
+function applyWifiSettings(){const q=new URLSearchParams(),v=id=>$(id).value;
+  q.append('wifiEnabled',$('wifiEnabled').checked?'1':'0');q.append('wifiSsid',v('wifiSsidCfg'));q.append('wifiPass',v('wifiPassCfg'));q.append('wifiDhcp',v('wifiModeCfg')==='static'?'0':'1');
+  ['Ip','Gw','Subnet','Dns1','Dns2'].forEach(k=>q.append('wifi'+k,v('wifi'+k+'Cfg')));
+  ask.open({t:'Wi-Fi ayarları kaydedilsin mi?',m:'Cihaz yeni ağa bağlanmayı deneyecek. Yanlış ayarda panele erişim kesilebilir, IP değişebilir.',ok:'Kaydet',go:()=>call('/wifi_apply?'+q).then(()=>{toast('Kaydedildi, cihaz yeniden bağlanıyor');$('wifiPassCfg').value='';wifiDirty=false;pull(true);}).catch(()=>toast('Wi-Fi ayarları kaydedilemedi'))});}
+
+/* --- Acilis --- */
+lockUntil=num(SS.get('evseLock'));if(lockUntil>Date.now())lockTick();
+const saved=SS.get('evseTok');if(saved)startSession(saved);else $('lgPass').focus();
 </script>
-
 </body></html>
 )HTML";
 
@@ -1854,10 +1766,11 @@ static void setupWiFi() {
         Serial.print("[WiFi] Connected SSID: ");
         Serial.println(WiFi.SSID());
       } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-        LOGW("[WiFi] koptu reason=%d", (int)info.wifi_sta_disconnected.reason);
+        Serial.print("[WiFi] Disconnected, reason: ");
+        Serial.println((int)info.wifi_sta_disconnected.reason);
       } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-        IPAddress ip = WiFi.localIP();
-        LOGI("[WiFi] IP %u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+        Serial.print("[WiFi] Got IP: ");
+        Serial.println(WiFi.localIP());
       }
     });
   }
@@ -1900,19 +1813,44 @@ static void setupWiFi() {
 // Her endpoint kendi verisini veya komutunu burada uretir.
 static void handleRoot() {
   noteWebActivity();
-  String html(FPSTR(USER_HTML));
-  html.replace("__USER_CUSTOM_CSS__", styleEscape(s_userScreenCustomCss));
   noteHttpResponseSent();
-  server.send(200, "text/html", html);
+  server.send_P(200, "text/html; charset=utf-8", USER_HTML);
 }
+// Yonetim paneli HTML kabugu korumasiz servis edilir; icinde gizli veri yoktur.
+// Yetki yalnizca veri uclarinda (Bearer jeton) aranir.
+// ~50 KB'lik sayfa RAM'e kopyalanmadan, yer tutucu yerinde degistirilerek akitilir.
 static void sendMainPage(const char* pageMode) {
   noteWebActivity();
-  if (!requireAdminAuth()) return;
-  String html(FPSTR(MAIN_HTML));
-  html.replace("__PAGE_MODE__", pageMode ? pageMode : "admin");
-  html.replace("__USER_CSS_TEXT__", htmlEscape(s_userScreenCustomCss));
+  static const char kModeKey[] = "__PAGE_MODE__";
+  const String modeVal = pageMode ? pageMode : "admin";
+  const char* tpl = MAIN_HTML;
+  const size_t tplLen = strlen(tpl);
+
+  // 1. tur: toplam uzunluk; 2. tur: gonderim.
+  size_t total = 0;
+  for (int pass = 0; pass < 2; ++pass) {
+    const char* cur = tpl;
+    if (pass == 1) {
+      server.sendHeader("Cache-Control", "no-store");
+      server.setContentLength(total);
+      server.send(200, "text/html; charset=utf-8", "");
+    }
+    for (;;) {
+      const char* hit = strstr(cur, kModeKey);
+      const size_t keyLen = sizeof(kModeKey) - 1;
+      const String* val = &modeVal;
+      size_t chunk = hit ? (size_t)(hit - cur) : (size_t)(tpl + tplLen - cur);
+      if (pass == 0) {
+        total += chunk + (hit ? val->length() : 0);
+      } else {
+        if (chunk) server.sendContent(cur, chunk);
+        if (hit && val->length()) server.sendContent(*val);
+      }
+      if (!hit) break;
+      cur = hit + keyLen;
+    }
+  }
   noteHttpResponseSent();
-  server.send(200, "text/html", html);
 }
 static void handleAdmin() { sendMainPage("admin"); }
 static void handleCalibrationPage() { sendMainPage("calibration"); }
@@ -1930,8 +1868,17 @@ static void handleManifest() { noteWebActivity(); noteHttpResponseSent(); server
 static void handleServiceWorker() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "application/javascript", SERVICE_WORKER_JS); }
 static void handleAppIcon() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "image/svg+xml", APP_ICON_SVG); }
 static void handleVehicleTopArt() { noteWebActivity(); noteHttpResponseSent(); server.send_P(200, "image/svg+xml", VEHICLE_TOP_ART_SVG); }
+// Kullanici ana ekranindaki arac fotografi. Herkese acik (auth yok);
+// PROGMEM (eslenmis flash) uzerinden RAM'e kopyalanmadan gonderilir.
+static void handleToggAracWebp() {
+  noteWebActivity();
+  server.sendHeader("Cache-Control", "public, max-age=86400");
+  noteHttpResponseSent();
+  server.send_P(200, "image/webp", reinterpret_cast<PGM_P>(TOGG_ARAC_V2_WEBP), TOGG_ARAC_V2_WEBP_LEN);
+}
 static void handleOtaCheck() {
   noteWebActivity();
+  if (!requireAdminAuth()) return;
   OTA_Manager::triggerCheckNow();
   noteHttpResponseSent();
   server.send(200, "application/json", "{\"ok\":1}");
@@ -2065,9 +2012,25 @@ static void failManualOta(const String& reason) {
   Serial.printf("[OTA] Manual upload reddedildi: %s\n", reason.c_str());
 }
 
+// /update sayfasi: panelden alinan 60 sn'lik tek kullanimlik ?t= biletiyle acilir.
+// Bilet burada yalnizca kontrol edilir; asil tuketim POST yuklemesinin basinda olur.
 static void handleManualUpdatePage() {
   noteWebActivity();
-  if (!requireAdminAuth()) return;
+  server.sendHeader("Cache-Control", "no-store");
+  const String ticket = server.arg("t");
+  if (!auth_check_upload_ticket(ticket, false)) {
+    noteHttpResponseSent();
+    server.send(401, "text/html; charset=utf-8",
+                F("<!doctype html><html><head><meta charset='utf-8'>"
+                  "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                  "<title>Yetki gerekli</title></head>"
+                  "<body style='font-family:system-ui,sans-serif;padding:24px'>"
+                  "<h1>Yetki gerekli</h1><p>.bin y&uuml;klemek i&ccedil;in y&ouml;netim paneline giri&scaron; yap&#305;p "
+                  "Yaz&#305;l&#305;m &rsaquo; &quot;.bin y&uuml;kle&quot; d&uuml;&#287;mesini kullan&#305;n "
+                  "(ba&#287;lant&#305; 60 sn ge&ccedil;erlidir).</p><p><a href='/admin#ota'>Y&ouml;netim paneline git</a></p>"
+                  "</body></html>"));
+    return;
+  }
 
   String html;
   html.reserve(1800);
@@ -2090,10 +2053,14 @@ static void handleManualUpdatePage() {
   html += OTA_Manager::currentVersion();
   html += F("<br><b>Yazma hedefi:</b> ota_0 / ota_1"
             "<br><b>Not:</b> USB haricinde factory bolumu yazilmaz.</div>");
-  html += F("<form method='POST' action='/update' enctype='multipart/form-data'>"
+  html += F("<form method='POST' action='/update?t=");
+  html += ticket;  // auth_check_upload_ticket yalnizca 32 hex karakteri kabul eder
+  html += F("' enctype='multipart/form-data'>"
             "<input type='file' name='firmware' accept='.bin,application/octet-stream' required>"
             "<button type='submit'>BIN YUKLE</button>"
-            "</form><p class='muted'><a href='/admin'>Admin panele don</a></p>"
+            "</form><p class='muted'>Yukleme baglantisi 60 sn gecerlidir ve tek kullanimliktir; "
+            "suresi dolarsa panelden tekrar acin.</p>"
+            "<p class='muted'><a href='/admin#ota'>Admin panele don</a></p>"
             "</div></body></html>");
 
   noteHttpResponseSent();
@@ -2102,13 +2069,20 @@ static void handleManualUpdatePage() {
 
 static void handleManualUpdateUpload() {
   noteWebActivity();
-  if (!server.authenticate(kAdminUser, kAdminPassword)) {
-    return;
-  }
 
   HTTPUpload& upload = server.upload();
   if (upload.status == UPLOAD_FILE_START) {
     resetManualOtaState();
+    // Yetki: ?t= tek kullanimlik bilet (burada tuketilir) ya da gecerli Bearer oturumu.
+    // WebServer, multipart govdesinden once URL argumanlarini ve basliklari ayristirir.
+    bool ok = auth_check_upload_ticket(server.arg("t"), true) ||
+              auth_check_bearer(server.header("Authorization"));
+    if (!ok) {
+      s_manualOta.lastError = "Yetkisiz yukleme: panelden yeniden '.bin yukle' ile acin";
+      Serial.println("[OTA] Manual upload reddedildi: yetkisiz");
+      return;  // active=false kalir; sonraki parcalar yok sayilir
+    }
+    s_manualOta.authorized = true;
     s_manualOta.active = true;
     s_manualOta.uploadedName = upload.filename;
 
@@ -2169,8 +2143,10 @@ static void handleManualUpdateUpload() {
 
 static void handleManualUpdateResult() {
   noteWebActivity();
-  if (!server.authenticate(kAdminUser, kAdminPassword)) {
-    server.requestAuthentication(BASIC_AUTH, "RotosisEVSE Admin", "Sifre gerekli");
+  if (!s_manualOta.authorized) {
+    String err = s_manualOta.lastError.length() ? s_manualOta.lastError : String("Yetkisiz yukleme");
+    resetManualOtaState();
+    server.send(401, "text/plain; charset=utf-8", err);
     return;
   }
 
@@ -2202,13 +2178,108 @@ static void handleManualUpdateResult() {
   }
 
   s_manualOta.active = false;
+  s_manualOta.authorized = false;
+  if (!s_manualOta.success) s_manualOta.lastError = "";
   noteHttpResponseSent();
   server.send(code, contentType, body);
 }
 
-// Status endpoint'i kullanici panelinin ana veri kaynagidir.
+static const char* computeAlarm(const PilotMeasurements& m, float iMax, bool staOk, uint32_t nowMs, int* level) {
+  bool manualStopAlertOn = (g_manualStopAlertUntilMs != 0 && ((int32_t)(g_manualStopAlertUntilMs - nowMs) > 0));
+  if (manualStopAlertOn) {
+    *level = 2;
+    return "Sarj manuel durduruldu";
+  }
+  if (m.stateStable == "E" || m.stateStable == "F") {
+    *level = 2;
+    return "Pilot hata durumu";
+  }
+  if (iMax > (g_currentLimitA + 1.0f)) {
+    *level = 1;
+    return "Akim limiti ustu";
+  }
+  if (!staOk) {
+    *level = 1;
+    return "Wi-Fi baglantisi yok";
+  }
+  *level = 0;
+  return "Sistem normal";
+}
+
+// Kullanici ekrani ("/") icin herkese acik, salt-okunur, asgari alanli durum.
+// Kalibrasyon, Wi-Fi profili, IP/MAC/host, OTA ve sifirlama bilgisi icermez.
+static void handleStatusPublic() {
+  noteWebActivity();
+  auto m = pilot_get();
+  uint32_t nowMs = millis();
+
+  float rawIa = safeFinite(current_sensor_get_irms_a());
+  float rawIb = safeFinite(current_sensor_get_irms_b());
+  float rawIc = safeFinite(current_sensor_get_irms_c());
+  bool relaySet = relay_get();
+  bool chargingState = (m.stateStable == "C" || m.stateStable == "D");
+  bool accountingEnabled = relaySet && pwmEnabled && chargingState;
+  if (!accountingEnabled) {
+    rawIa = 0.0f;
+    rawIb = 0.0f;
+    rawIc = 0.0f;
+  }
+  float ia = 0.0f, ib = 0.0f, ic = 0.0f;
+  updateDisplayCurrents(rawIa, rawIb, rawIc, &ia, &ib, &ic);
+  float iMax = rawIa;
+  if (rawIb > iMax) iMax = rawIb;
+  if (rawIc > iMax) iMax = rawIc;
+  float pW = accountingEnabled ? safeFinite(g_powerW) : 0.0f;
+  bool staOk = (WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0);
+  int alarmLv = 0;
+  const char* alarmTxt = computeAlarm(m, iMax, staOk, nowMs, &alarmLv);
+
+  refreshDeviceIdentity();
+  const String stationName = jsonEscape(String(s_stationLabel));
+  const String stationAddr = jsonEscape(String(s_stationAddress));
+  // Planli sarj: yalnizca yasakli mi ve ne zamana kadar (HH:MM).
+  evse_sched::Eval schedEval = sched_eval();
+  char schedUntil[6] = "";
+  if (schedEval.blocked && schedEval.untilMin >= 0) evse_sched::format_hhmm((uint16_t)schedEval.untilMin, schedUntil);
+
+  char* buf = s_jsonBuf;  // web gorevi tek is parcacigi; ortak tampon guvenli
+  snprintf(
+    buf, sizeof(s_jsonBuf),
+    "{\"state\":\"%s\",\"ia\":%.2f,\"ib\":%.2f,\"ic\":%.2f,"
+    "\"pW\":%.1f,\"eKWh\":%.3f,\"tSec\":%lu,\"phase\":%d,"
+    "\"modeId\":%d,\"limitA\":%.1f,\"limitTargetA\":%.1f,\"staOk\":%d,"
+    "\"stationName\":\"%s\",\"stationAddr\":\"%s\","
+    "\"alarmLv\":%d,\"alarmTxt\":\"%s\","
+    "\"sLive\":%d,\"sLiveSec\":%lu,\"sLiveKWh\":%.3f,"
+    "\"schedBlocked\":%d,\"schedUntil\":\"%s\"}",
+    m.stateStable.c_str(),
+    ia, ib, ic,
+    pW, safeFinite(g_energyKWh),
+    (unsigned long)g_chargeSeconds,
+    g_phaseCount,
+    g_chargeMode,
+    safeFinite(g_currentLimitA),
+    safeFinite(g_targetCurrentLimitA),
+    staOk ? 1 : 0,
+    stationName.c_str(),
+    stationAddr.c_str(),
+    alarmLv,
+    alarmTxt,
+    g_sessionLive ? 1 : 0,
+    (unsigned long)g_sessionLiveSeconds,
+    safeFinite(g_sessionLiveEnergyKWh),
+    schedEval.blocked ? 1 : 0,
+    schedUntil
+  );
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", buf);
+  noteHttpResponseSent();
+}
+
+// Yonetim panelinin tam durum verisi (Bearer jeton ister).
 static void handleStatus() {
   noteWebActivity();
+  if (!requireAdminAuth()) return;
   auto m = pilot_get();
   uint32_t nowMs = millis();
 
@@ -2229,12 +2300,12 @@ static void handleStatus() {
   updateDisplayCurrents(rawIa, rawIb, rawIc, &ia, &ib, &ic);
   float pW = accountingEnabled ? safeFinite(g_powerW) : 0.0f;
   float eKWh = safeFinite(g_energyKWh);
+  int ppRaw = analogRead(PP_ADC_PIN);
+  float ppVolt = safeFinite((ppRaw * 3.3f) / 4095.0f);
   float cpHigh = safeFinite(m.cpHigh);
   float cpLow = safeFinite(m.cpLow);
   float adcHigh = safeFinite(m.adcHigh);
   float adcLow = safeFinite(m.adcLow);
-  int ppRaw = analogRead(PP_ADC_PIN);
-  float ppVolt = safeFinite((ppRaw * 3.3f) / 4095.0f);
   const char* relayLabel = relaySet ? "SET" : "RESET";
   float iMax = rawIa;
   if (rawIb > iMax) iMax = rawIb;
@@ -2306,6 +2377,14 @@ static void handleStatus() {
     alarmTxt = "Wi-Fi baglantisi yok";
   }
 
+  // Bulut ve planli sarj durumu (gizli anahtar icermez).
+  char cloudJson[512];
+  char schedJson[300];
+  cloud_status_json(cloudJson, sizeof(cloudJson));
+  sched_status_json(schedJson, sizeof(schedJson), true);
+  if (cloudJson[0] == '\0') snprintf(cloudJson, sizeof(cloudJson), "null");
+  if (schedJson[0] == '\0') snprintf(schedJson, sizeof(schedJson), "null");
+
   snprintf(
     s_jsonBuf, sizeof(s_jsonBuf),
     "{\"lInt\":%d,\"onD\":%lu,\"offD\":%lu,\"stable\":%d,"
@@ -2322,7 +2401,8 @@ static void handleStatus() {
     "\"otaCur\":\"%s\",\"otaRemote\":\"%s\",\"otaPart\":\"%s\",\"otaImgState\":\"%s\",\"otaStatus\":\"%s\",\"otaErr\":\"%s\",\"otaAgeMs\":%lu,"
     "\"alarmLv\":%d,\"alarmTxt\":\"%s\","
     "\"sLive\":%d,\"sLiveStart\":%lu,\"sLiveSec\":%lu,\"sLiveKWh\":%.3f,"
-    "\"rstTotal\":%lu,\"rstNow\":%lu,\"rstHist\":%lu,\"rstLastSec\":%lu,\"rstLastMode\":\"%s\"}",
+    "\"rstTotal\":%lu,\"rstNow\":%lu,\"rstHist\":%lu,\"rstLastSec\":%lu,\"rstLastMode\":\"%s\",\"pwMustChange\":%d,"
+    "\"cloud\":%s,\"sched\":%s}",
     loopIntervalMs,
     (unsigned long)relayOnDelayMs,
     (unsigned long)relayOffDelayMs,
@@ -2380,7 +2460,10 @@ static void handleStatus() {
     (unsigned long)s_resetNowCount,
     (unsigned long)s_resetHistoryCount,
     (unsigned long)s_resetLastSec,
-    resetModeLabel(s_resetLastModeId)
+    resetModeLabel(s_resetLastModeId),
+    auth_must_change_password() ? 1 : 0,
+    cloudJson,
+    schedJson
   );
 
   server.send(200, "application/json", s_jsonBuf);
@@ -2390,6 +2473,7 @@ static void handleStatus() {
 // Gecmis seanslar icin ayri JSON endpoint.
 static void handleHistory() {
   noteWebActivity();
+  if (!requireAdminAuth()) return;
   int n = 0;
   n += snprintf(
     s_jsonBuf + n, sizeof(s_jsonBuf) - n,
@@ -2422,6 +2506,8 @@ static void handleHistory() {
 
 // Kullanici panelindeki AUTO / START / STOP komutu burada islenir.
 static void handleChargeCmd() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
   if (!server.hasArg("m")) {
     server.send(400, "text/plain", "missing m");
     return;
@@ -2449,6 +2535,8 @@ static void handleChargeCmd() {
 
 // Enerji ve gecmis sifirlama endpoint'i.
 static void handleDataReset() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
   bool clearNow = true;
   bool clearHistory = true;
   if (server.hasArg("now")) {
@@ -2477,13 +2565,13 @@ static void handleDataReset() {
 
 // Web admin panelinden gelen CP / relay / timing ayarlari burada uygulanir.
 static void handleCalibApply() {
+  noteWebActivity();
   if (!requireAdminAuth()) return;
   float calA = 0.0f, calB = 0.0f, calC = 0.0f;
   float offA = 0.0f, offB = 0.0f, offC = 0.0f;
   float rngLowMax = 0.0f, rngMidMax = 0.0f, rngLowOff = 0.0f, rngMidOff = 0.0f;
   bool locationChanged = false;
   bool stationNameChanged = false;
-  bool userCssChanged = false;
   current_sensor_get_calibration(&calA, &calB, &calC, &offA, &offB, &offC);
   current_sensor_get_range_profile(&rngLowMax, &rngMidMax, &rngLowOff, &rngMidOff);
   if (server.hasArg("lInt")) {
@@ -2581,17 +2669,7 @@ static void handleCalibApply() {
       locationChanged = true;
     }
   }
-  if (server.hasArg("userCss")) {
-    String requested = server.arg("userCss");
-    requested.replace("\r", "");
-    if (requested.length() > kMaxUserScreenCssLen) {
-      requested.remove(kMaxUserScreenCssLen);
-    }
-    if (requested != s_userScreenCustomCss) {
-      s_userScreenCustomCss = requested;
-      userCssChanged = true;
-    }
-  }
+  // Not: eski "userCss" parametresi artik kabul edilmez (yok sayilir).
   current_sensor_set_calibration(calA, calB, calC, offA, offB, offC);
   current_sensor_set_range_profile(rngLowMax, rngMidMax, rngLowOff, rngMidOff);
   if (locationChanged) {
@@ -2600,20 +2678,21 @@ static void handleCalibApply() {
   if (locationChanged || stationNameChanged) {
     saveLocationSettings();
   }
-  if (userCssChanged) {
-    saveUserScreenCssSetting();
-  }
   server.send(200, "text/plain", "OK");
   noteHttpResponseSent();
 }
 
 static void handleRelay() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
   if (server.hasArg("on")) relay_set(server.arg("on") == "1");
   server.send(200, "text/plain", "OK");
   noteHttpResponseSent();
 }
 
 static void handleRelayAuto() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
   if (server.hasArg("en")) relay_set_auto_enabled(server.arg("en") == "1");
   server.send(200, "text/plain", "OK");
   noteHttpResponseSent();
@@ -2643,6 +2722,249 @@ static void handlePulseSet() {
 #endif
 }
 
+// ---- Panel girisi / oturum API'leri (bkz. auth.cpp) ----
+static constexpr size_t kMaxAuthBodyLen = 512;
+
+static void sendJsonNoStore(int code, const String& body) {
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(code, "application/json", body);
+}
+
+// JSON govdesini okur; cok buyuk / bozuk ise 400 gonderip false doner.
+static bool readAuthJson(StaticJsonDocument<384>& doc) {
+  const String& body = server.arg("plain");
+  if (body.length() == 0 || body.length() > kMaxAuthBodyLen ||
+      deserializeJson(doc, body) != DeserializationError::Ok) {
+    sendJsonNoStore(400, "{\"error\":\"Gecersiz istek\"}");
+    return false;
+  }
+  return true;
+}
+
+// POST /api/login {user,password} -> 200 {token,ttl,mustChange} | 401 {left} | 429 {retryAfter}
+static void handleApiLogin() {
+  noteWebActivity();
+  StaticJsonDocument<384> doc;
+  if (!readAuthJson(doc)) return;
+  const char* user = doc["user"] | "";
+  const char* pass = doc["password"] | "";
+  char token[evse_auth::kTokenHexLen + 1] = {0};
+  uint32_t info = 0;
+  AuthLoginResult r = auth_login(user, pass, token, &info);
+  char out[160];
+  if (r == AuthLoginResult::Ok) {
+    snprintf(out, sizeof(out), "{\"token\":\"%s\",\"ttl\":%lu,\"mustChange\":%d}",
+             token, (unsigned long)auth_session_ttl_sec(), auth_must_change_password() ? 1 : 0);
+    memset(token, 0, sizeof(token));
+    sendJsonNoStore(200, out);
+    noteHttpResponseSent();
+    return;
+  }
+  if (r == AuthLoginResult::Locked) {
+    server.sendHeader("Retry-After", String((unsigned long)info));
+    snprintf(out, sizeof(out), "{\"retryAfter\":%lu}", (unsigned long)info);
+    sendJsonNoStore(429, out);
+    return;
+  }
+  snprintf(out, sizeof(out), "{\"left\":%lu}", (unsigned long)info);
+  sendJsonNoStore(401, out);
+}
+
+// POST /api/logout (Bearer) -> 200; jeton gecersiz olsa da 200 doner.
+static void handleApiLogout() {
+  noteWebActivity();
+  auth_logout(server.header("Authorization"));
+  sendJsonNoStore(200, "{\"ok\":1}");
+  noteHttpResponseSent();
+}
+
+// POST /api/password {current,new} (Bearer) -> 200 {token,ttl} | 403 {error} | 429 {error,retryAfter}
+static void handleApiPassword() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
+  StaticJsonDocument<384> doc;
+  if (!readAuthJson(doc)) return;
+  const char* cur = doc["current"] | "";
+  const char* next = doc["new"] | "";
+  char token[evse_auth::kTokenHexLen + 1] = {0};
+  uint32_t info = 0;
+  AuthPwResult r = auth_change_password(cur, next, token, &info);
+  char out[160];
+  switch (r) {
+    case AuthPwResult::Ok:
+      snprintf(out, sizeof(out), "{\"ok\":1,\"token\":\"%s\",\"ttl\":%lu}",
+               token, (unsigned long)auth_session_ttl_sec());
+      memset(token, 0, sizeof(token));
+      sendJsonNoStore(200, out);
+      noteHttpResponseSent();
+      return;
+    case AuthPwResult::Locked:
+      server.sendHeader("Retry-After", String((unsigned long)info));
+      snprintf(out, sizeof(out), "{\"error\":\"Cok fazla hatali deneme. %lu sn sonra tekrar deneyin.\",\"retryAfter\":%lu}",
+               (unsigned long)info, (unsigned long)info);
+      sendJsonNoStore(429, out);
+      return;
+    case AuthPwResult::WrongCurrent:
+      sendJsonNoStore(403, "{\"error\":\"Mevcut parola hatali.\"}");
+      return;
+    case AuthPwResult::TooShort:
+      sendJsonNoStore(403, "{\"error\":\"Yeni parola en az 10 karakter olmali.\"}");
+      return;
+    case AuthPwResult::TooLong:
+      sendJsonNoStore(403, "{\"error\":\"Yeni parola en fazla 64 karakter olabilir.\"}");
+      return;
+    case AuthPwResult::SameAsCurrent:
+      sendJsonNoStore(403, "{\"error\":\"Yeni parola mevcut paroladan farkli olmali.\"}");
+      return;
+    case AuthPwResult::StoreFailed:
+    default:
+      sendJsonNoStore(500, "{\"error\":\"Parola kaydedilemedi (NVS).\"}");
+      return;
+  }
+}
+
+// POST /api/upload_ticket (Bearer) -> {t,ttl}: /update?t=... icin 60 sn'lik tek kullanimlik bilet.
+static void handleApiUploadTicket() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
+  char ticket[evse_auth::kTokenHexLen + 1] = {0};
+  auth_issue_upload_ticket(ticket);
+  char out[96];
+  snprintf(out, sizeof(out), "{\"t\":\"%s\",\"ttl\":%lu}", ticket,
+           (unsigned long)(evse_auth::kUploadTicketTtlMs / 1000UL));
+  sendJsonNoStore(200, out);
+  noteHttpResponseSent();
+}
+
+// GET /api/cloud_cfg (Bearer) -> bulut durumu (gizli anahtar yok; yalnizca secretSet)
+static void handleApiCloudCfgGet() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
+  char out[512];
+  cloud_status_json(out, sizeof(out));
+  sendJsonNoStore(200, out);
+  noteHttpResponseSent();
+}
+
+// POST /api/cloud_cfg (Bearer). Alanlarin hepsi istege bagli:
+// {on:bool, code:"ABC123"|"" (""=MAC varsayilani), url:"https://..."|"" (""=varsayilan),
+//  secret:"<43 krk>", clearSecret:bool, requireCloudStart:bool} -> 200 durum | 400 {error}
+static void handleApiCloudCfg() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
+  const String& body = server.arg("plain");
+  StaticJsonDocument<512> doc;
+  if (body.length() == 0 || body.length() > 512 || deserializeJson(doc, body) != DeserializationError::Ok ||
+      !doc.is<JsonObject>()) {
+    sendJsonNoStore(400, "{\"error\":\"Gecersiz istek\"}");
+    return;
+  }
+  CloudCfgChange ch;
+  char code[24] = "";
+  char url[128] = "";
+  char secret[64] = "";
+  if (!doc["on"].isNull()) {
+    if (!doc["on"].is<bool>()) { sendJsonNoStore(400, "{\"error\":\"on true/false olmali\"}"); return; }
+    ch.on = doc["on"].as<bool>() ? 1 : 0;
+  }
+  if (!doc["requireCloudStart"].isNull()) {
+    if (!doc["requireCloudStart"].is<bool>()) { sendJsonNoStore(400, "{\"error\":\"requireCloudStart true/false olmali\"}"); return; }
+    ch.requireStart = doc["requireCloudStart"].as<bool>() ? 1 : 0;
+  }
+  if (!doc["code"].isNull()) {
+    const char* c = doc["code"] | "";
+    if (strlen(c) >= sizeof(code)) { sendJsonNoStore(400, "{\"error\":\"Istasyon kodu cok uzun\"}"); return; }
+    size_t i = 0;
+    for (; c[i]; ++i) code[i] = (char)toupper((unsigned char)c[i]);
+    code[i] = '\0';
+    ch.code = code;
+  }
+  if (!doc["url"].isNull()) {
+    const char* u = doc["url"] | "";
+    if (strlen(u) >= sizeof(url)) { sendJsonNoStore(400, "{\"error\":\"Sunucu adresi cok uzun\"}"); return; }
+    snprintf(url, sizeof(url), "%s", u);
+    ch.url = url;
+  }
+  if (!doc["secret"].isNull()) {
+    const char* s = doc["secret"] | "";
+    if (strlen(s) >= sizeof(secret)) { sendJsonNoStore(400, "{\"error\":\"Gizli anahtar 43 karakter olmali (A-Z a-z 0-9 _ -)\"}"); return; }
+    snprintf(secret, sizeof(secret), "%s", s);
+    ch.secret = secret;
+  }
+  ch.clearSecret = doc["clearSecret"] | false;
+  const char* err = "";
+  bool ok = cloud_apply_config(ch, &err);
+  // Anahtar kopyalarini temizle (istek govdesi WebServer tarafinda istek bitince serbest kalir).
+  memset(secret, 0, sizeof(secret));
+  doc.clear();
+  if (!ok) {
+    String out = String("{\"error\":\"") + err + "\"}";
+    sendJsonNoStore(400, out);
+    return;
+  }
+  char out[512];
+  cloud_status_json(out, sizeof(out));
+  sendJsonNoStore(200, out);
+  noteHttpResponseSent();
+}
+
+// GET /api/schedule (Bearer) -> planli sarj ayari + durum
+// POST /api/schedule {on:bool, windows:[{s:"HH:MM",e:"HH:MM",d:1..127}]} (en cok 3) -> 200 durum | 400 {error}
+static void handleApiScheduleGet() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
+  char out[300];
+  sched_status_json(out, sizeof(out), true);
+  sendJsonNoStore(200, out[0] ? out : "{}");
+  noteHttpResponseSent();
+}
+
+static void handleApiSchedulePost() {
+  noteWebActivity();
+  if (!requireAdminAuth()) return;
+  const String& body = server.arg("plain");
+  StaticJsonDocument<768> doc;
+  if (body.length() == 0 || body.length() > 512 || deserializeJson(doc, body) != DeserializationError::Ok) {
+    sendJsonNoStore(400, "{\"error\":\"Gecersiz istek\"}");
+    return;
+  }
+  evse_sched::Schedule s;
+  JsonVariant onV = doc["on"];
+  JsonArray arr = doc["windows"].as<JsonArray>();
+  if (!onV.is<bool>() || arr.isNull()) {
+    sendJsonNoStore(400, "{\"error\":\"on ve windows gerekli\"}");
+    return;
+  }
+  if (arr.size() > evse_sched::kMaxWindows) {
+    sendJsonNoStore(400, "{\"error\":\"En cok 3 aralik olabilir\"}");
+    return;
+  }
+  s.enabled = onV.as<bool>();
+  s.count = 0;
+  for (JsonObject w : arr) {
+    uint16_t a = 0, b = 0;
+    int d = w["d"] | (int)evse_sched::kAllDays;
+    if (!evse_sched::parse_hhmm(w["s"] | "", &a) || !evse_sched::parse_hhmm(w["e"] | "", &b) || d < 1 || d > 127) {
+      sendJsonNoStore(400, "{\"error\":\"Saat HH:MM, gun 1-127 olmali\"}");
+      return;
+    }
+    s.w[s.count].startMin = a;
+    s.w[s.count].endMin = b;
+    s.w[s.count].days = (uint8_t)d;
+    s.count++;
+  }
+  const char* err = "";
+  if (!sched_set(s, &err)) {
+    String out = String("{\"error\":\"") + err + "\"}";
+    sendJsonNoStore(400, out);
+    return;
+  }
+  sched_loop();  // yeni ayari hemen degerlendir (durum yaniti guncel olsun)
+  char out[300];
+  sched_status_json(out, sizeof(out), true);
+  sendJsonNoStore(200, out[0] ? out : "{}");
+  noteHttpResponseSent();
+}
 
 // 4) Route kayitlari ve servis baslatma.
 void web_init() {
@@ -2657,10 +2979,12 @@ void web_init() {
   loadWifiSettings();
   loadCurrentLimitSetting();
   loadLocationSettings();
-  loadUserScreenCssSetting();
+  purgeLegacyUserCss();
+  auth_init();
   setupWiFi();
   setupArduinoOta();
 #if RELAY_USE_LATCH_PINS
+  // Yalniz eski latch kart. Bu PCB'de GPIO7=L3, GPIO16=PP; cikisa cekilmez.
   pinMode(MOSFET_RESET_PIN, OUTPUT);
   pinMode(MOSFET_SET_PIN, OUTPUT);
   digitalWrite(MOSFET_RESET_PIN, LOW);
@@ -2680,6 +3004,7 @@ void web_init() {
   server.on("/sw.js", HTTP_GET, handleServiceWorker);
   server.on("/app-icon.svg", HTTP_GET, handleAppIcon);
   server.on("/vehicle-top-art.svg", HTTP_GET, handleVehicleTopArt);
+  server.on("/togg-arac-v2.webp", HTTP_GET, handleToggAracWebp);
   server.on("/ota_check", HTTP_GET, handleOtaCheck);
   server.on("/ota_install", HTTP_GET, handleOtaInstall);
   server.on("/wifi_scan", HTTP_GET, handleWifiScan);
@@ -2690,6 +3015,16 @@ void web_init() {
   server.on("/generate_204", HTTP_GET, handleRoot);
   server.on("/hotspot-detect.html", HTTP_GET, handleRoot);
   server.on("/fwlink", HTTP_GET, handleRoot);
+  // Panel girisi (jeton tabanli). Yonetim veri uclari Bearer ister.
+  server.on("/api/login", HTTP_POST, handleApiLogin);
+  server.on("/api/logout", HTTP_POST, handleApiLogout);
+  server.on("/api/password", HTTP_POST, handleApiPassword);
+  server.on("/api/upload_ticket", HTTP_POST, handleApiUploadTicket);
+  server.on("/api/cloud_cfg", HTTP_GET, handleApiCloudCfgGet);
+  server.on("/api/cloud_cfg", HTTP_POST, handleApiCloudCfg);
+  server.on("/api/schedule", HTTP_GET, handleApiScheduleGet);
+  server.on("/api/schedule", HTTP_POST, handleApiSchedulePost);
+  server.on("/status_public", HTTP_GET, handleStatusPublic);
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/history", HTTP_GET, handleHistory);
   server.on("/data_reset", HTTP_GET, handleDataReset);
@@ -2697,10 +3032,8 @@ void web_init() {
   server.on("/calib_apply", HTTP_GET, handleCalibApply);
   server.on("/relay", HTTP_GET, handleRelay);
   server.on("/relay_auto", HTTP_GET, handleRelayAuto);
-#if RELAY_USE_LATCH_PINS
   server.on("/pulse_reset", HTTP_GET, handlePulseReset);
   server.on("/pulse_set", HTTP_GET, handlePulseSet);
-#endif
   server.onNotFound(handleRoot);
   s_serverStarted = false;
   ensureServerStarted();
@@ -2708,7 +3041,7 @@ void web_init() {
     BaseType_t taskOk = xTaskCreatePinnedToCore(
       web_task_runner,
       "webLoop",
-      6144,
+      8192,  // /status ve bulut/zamanlayici JSON tamponlari icin
       nullptr,
       1,
       &s_webTaskHandle,

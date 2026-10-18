@@ -9,6 +9,8 @@
 #include "pilot/pilot.h"
 #include "io/relay.h"
 #include "net/web_ui.h"
+#include "net/cloud_client.h"
+#include "net/schedule.h"
 #include "ui/oled_ui.h"
 #include "io/current_sensor.h"
 #include "OTA_Manager.h"
@@ -360,6 +362,7 @@ static uint32_t lastEnergyMs = 0;
 static uint32_t chargeAccumMs = 0;
 static uint32_t chargeSegmentStartMs = 0;
 static uint32_t sessionStartMs = 0;
+static uint32_t sessionActiveMs = 0;
 static float sessionStartEnergyWh = 0.0f;
 static uint8_t sessionPhaseMax = 1;
 
@@ -386,6 +389,7 @@ void resetChargeData(bool clearHistory)
   chargeAccumMs = 0;
   chargeSegmentStartMs = 0;
   sessionStartMs = 0;
+  sessionActiveMs = 0;
   sessionStartEnergyWh = 0.0f;
   sessionPhaseMax = 1;
 
@@ -486,8 +490,10 @@ void setup()
   digitalWrite(ERROR_LED_PIN, LOW);
 
 
-  // Web + OTA
+  // Web + OTA. Bulut anahtari yoksa istemci pasiftir; zamanlayici varsayilan kapali.
+  sched_init();
   web_init();
+  cloud_init();
   OTA_Manager::begin(kOtaManifestUrl, kOtaAutoCheckIntervalMs, kGitHubFingerprint);
 
   // OLED
@@ -586,6 +592,7 @@ void loop()
     if (!g_sessionLive) {
       g_sessionLive = true;
       sessionStartMs = nowMs;
+      sessionActiveMs = 0;
       sessionStartEnergyWh = energyWh;
       sessionPhaseMax = threePhase ? 3 : 1;
       g_sessionLiveStartSec = sessionStartMs / 1000;
@@ -600,14 +607,19 @@ void loop()
     uint32_t dtMs = nowMs - lastEnergyMs;
     energyWh += (powerW * (dtMs / 3600000.0f));
     lastEnergyMs = nowMs;
+    sessionActiveMs += dtMs;
 
-    g_sessionLiveSeconds = (nowMs - sessionStartMs) / 1000;
+    g_sessionLiveSeconds = sessionActiveMs / 1000;
     float liveWh = energyWh - sessionStartEnergyWh;
     if (liveWh < 0.0f) liveWh = 0.0f;
     g_sessionLiveEnergyKWh = liveWh / 1000.0f;
   } else {
-    if (g_sessionLive) {
-      uint32_t durSec = (nowMs - sessionStartMs) / 1000;
+    // Arac kilitli kapiyi acinca sarji bekletir (state B). Fis takili ve PWM acik
+    // oldugu surece seans duraklamis sayilir; akim tekrar gelince ayni seans surer.
+    bool sessionPaused = g_sessionLive && cableConnected && pwmEnabled &&
+                         m.stateStable != "E" && m.stateStable != "F";
+    if (g_sessionLive && !sessionPaused) {
+      uint32_t durSec = sessionActiveMs / 1000;
       float deltaWh = energyWh - sessionStartEnergyWh;
       if (deltaWh < 0.0f) deltaWh = 0.0f;
       float avgW = (durSec > 0) ? (deltaWh * 3600.0f / durSec) : 0.0f;
@@ -719,6 +731,16 @@ void loop()
       nextPwmEnabled = true;
       nextDuty = amps_to_duty(g_targetCurrentLimitA);
     }
+  }
+
+  // Bulut (requireCloudStart) ve planli sarj. Ikisi de kapaliyken chargePermit hep true:
+  // PWM ve kontaktör bugünkü gibi kalır. İzin yoksa yalnız PWM kapanır.
+  // Kontaktör hâlâ C/D kuralına bağlıdır (include/app_pins.h, relay.cpp).
+  bool schedBlocked = sched_loop();
+  bool chargePermit = cloud_loop(m.stateStable, ia, ib, ic, powerW, energyKWh, chargeSeconds, schedBlocked);
+  if (!chargePermit || g_chargeMode == 2) {
+    nextPwmEnabled = false;
+    nextDuty = 0;
   }
 
   // Sadece değişiklik varsa uygula

@@ -55,6 +55,14 @@
   Ne is yapar: Wi-Fi, mDNS, OTA, web paneli ve JSON endpointleri burada toplanir.
   Ne zaman bakilir: Web panelde veri, ayar veya yeni API gerekiyorsa.
 
+- `src/net/auth*.cpp`, `src/net/cloud_*.cpp`, `src/net/schedule*.cpp`
+  Ne is yapar: Yonetim jetonu, RTevCharge bulut yoklamasi ve planli sarj. Pin haritasina dokunmazlar.
+  Ne zaman bakilir: Mobil uygulama, QR akisi veya puant saati degisecekse.
+
+- `src/telegram_notify.cpp`
+  Ne is yapar: Telegram komutlari ve bildirim kuyrugu.
+  Ne zaman bakilir: Bot komutu veya sohbet kimligi degisecekse.
+
 - `src/gpio_test_main.cpp`
   Ne is yapar: Ana firmware yerine hizli LED / GPIO testi icin kullanilan mini programdir.
   Ne zaman bakilir: Donanimi parcali test etmek istediginde.

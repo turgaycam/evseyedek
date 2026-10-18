@@ -15,6 +15,10 @@ Bu dosya, "su ozelligi degistirecegim, hangi dosyaya gitmeliyim?" sorusu icin hi
 ## Arayuz
 - OLED gorunumu degisecek: `src/ui/oled_ui.cpp`
 - Web arayuzu veya yeni endpoint eklenecek: `src/net/web_ui.cpp`
+- Bulut veya mobil baslat/durdur: `src/net/cloud_client.cpp` (pin/role degil)
+- Planli sarj saatleri: `src/net/schedule.cpp`
+- Panel parolasi / jeton: `src/net/auth.cpp`
+- Telegram komutu: `src/telegram_notify.cpp`
 
 ## Test ve Servis
 - Sadece LED / GPIO testi yapacaksan: `src/gpio_test_main.cpp`

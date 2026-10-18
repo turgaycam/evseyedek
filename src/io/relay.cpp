@@ -130,6 +130,8 @@ void relay_update_auto(const String& stableState, bool pwmEnabled, int pwmDutyPe
   (void)pwmDutyPercent;
 
   // Yeni kart: GPIO4 state C/D boyunca surekli HIGH, diger state'lerde LOW.
+  // PWM, bulut izni ve gecikme bu karari degistirmez. Durdurma PWM ile araca birakilir;
+  // arac C/D'den cikinca cikis LOW olur.
   bool shouldBeOn = (stableState == "C" || stableState == "D");
   if (shouldBeOn == relayOn) return;
 

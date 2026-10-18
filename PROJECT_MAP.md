@@ -13,7 +13,12 @@ Kod davranisini degistirmez; sadece nerede ne oldugunu hatirlatir.
 - Role ve latch surusu: `src/io/relay.cpp`
 - OLED ekrani: `src/ui/oled_ui.cpp`
 - Web panel ve endpointler: `src/net/web_ui.cpp`
+- Telegram: `src/telegram_notify.cpp`
+- Bulut / mobil uygulama: `src/net/cloud_client.cpp` (mantik `cloud_core`)
+- Planli sarj: `src/net/schedule.cpp` (mantik `schedule_core`)
+- Yonetim oturumu: `src/net/auth.cpp` (mantik `auth_core`)
 - Sadece GPIO testi: `src/gpio_test_main.cpp`
+- Birlestirme karari: `PLAN.md`
 
 ## Hizli Mudahale Rehberi
 - Yeni kart takildiysa once `include/app_pins.h`, sonra `platformio.ini`
