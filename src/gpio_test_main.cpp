@@ -1,9 +1,11 @@
 #include <Arduino.h>
+#include "app_pins.h"
 
 // Bu dosya ana EVSE firmware'i degildir.
 // [env:esp32-s3-gpio-test] secilince yalnizca LED / GPIO testi icin derlenir.
+// Pinler include/app_pins.h ile ayni olmak zorundadir.
 
-constexpr uint8_t kLedPins[] = {8, 17, 18};
+constexpr uint8_t kLedPins[] = {STATE_LED_PIN, WIFI_LED_PIN, ERROR_LED_PIN};
 constexpr uint8_t kLedOn = HIGH;
 constexpr uint8_t kLedOff = LOW;
 constexpr uint32_t kOnMs = 500;
@@ -25,7 +27,8 @@ void setup() {
   delay(300);
   Serial.println();
   Serial.println("GPIO LED TEST START");
-  Serial.println("Pins: STATE GPIO13, WIFI GPIO14, ERROR GPIO12");
+  Serial.printf("Pins: STATE GPIO%d, WIFI GPIO%d, ERROR GPIO%d\n",
+                STATE_LED_PIN, WIFI_LED_PIN, ERROR_LED_PIN);
   Serial.println("Pattern: each LED ON/OFF in sequence");
 
   for (uint8_t pin : kLedPins) {

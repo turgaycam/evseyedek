@@ -1,7 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
-// Donanim pin haritasi burada tutulur.
+// Donanim pin haritasi ve role cikis secimi YALNIZCA burada tutulur.
+// Yeni kart (bu PCB) dogru kaynaktir. Baska firmware'deki pin/latch haritasi alinmaz.
 // Yeni karta gectiginde ilk bakman gereken dosya budur.
 
 // OLED (I2C: Wire.begin(SDA, SCL))
